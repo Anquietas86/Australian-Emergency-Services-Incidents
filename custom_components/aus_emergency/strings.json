@@ -1,0 +1,28 @@
+{
+  "title": "Australian Emergency",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Australian Emergency (SA)",
+        "description": "Choose your state and options.",
+        "data": {
+          "state": "State",
+          "update_interval": "Update interval (seconds)",
+          "remove_stale": "Remove stale incidents from HA"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "state": "State",
+          "update_interval": "Update interval (seconds)",
+          "remove_stale": "Remove stale incidents from HA"
+        }
+      }
+    }
+  }
+}

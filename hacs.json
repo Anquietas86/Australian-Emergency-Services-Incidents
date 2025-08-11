@@ -1,0 +1,6 @@
+{
+  "name": "Australian Emergency Services Incidents",
+  "render_readme": true,
+  "country": "AU",
+  "homeassistant": "2024.6.0"
+}
