@@ -43,7 +43,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         for item in incidents:
             inc_no = (item.get("IncidentNo") or "").strip()
             if not inc_no:
-                # fallback deterministic key
                 inc_no = f"{item.get('Location_name','unknown')}-{item.get('Date','')}-{item.get('Time','')}"
 
             seen_ids.add(inc_no)
@@ -56,30 +55,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             else:
                 ent.update_from_item(item)
 
-        # Remove or mark stale for entities not present anymore
         stale_ids = [eid for eid in list(entities.keys()) if eid not in seen_ids]
         if stale_ids:
             if remove_stale:
                 registry = er.async_get(hass)
                 for sid in stale_ids:
                     ent = entities.pop(sid, None)
-                    if ent:
-                        eid = ent.entity_id
-                        if eid:
-                            entry = registry.async_get(eid)
-                            if entry:
-                                registry.async_remove(eid)
-                                _LOGGER.debug("Removed stale entity %s", eid)
+                    if ent and ent.entity_id:
+                        entry_reg = registry.async_get(ent.entity_id)
+                        if entry_reg:
+                            registry.async_remove(ent.entity_id)
+                            _LOGGER.debug("Removed stale geo entity %s", ent.entity_id)
             else:
                 for sid in stale_ids:
                     ent = entities.pop(sid, None)
                     if ent:
                         ent.mark_stale()
 
-    # Initial sync
     await _sync_entities()
 
-    # Periodic updates
     async def _periodic_update(now):
         await coordinator.async_request_refresh()
         await _sync_entities()
@@ -130,7 +124,6 @@ class CFSIncidentEntity(GeolocationEvent):
         self._attrs[ATTR_AIRCRAFT] = item.get("Aircraft")
         self._attrs[ATTR_AGENCY] = item.get("Service") or item.get("Agency")
 
-        # Friendly name stable (no status)
         name_parts = []
         if item.get("Type"):
             name_parts.append(item["Type"])

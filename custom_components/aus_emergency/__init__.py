@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.const import Platform
 
-PLATFORMS: list[str] = ["geo_location"]
+PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR]
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True

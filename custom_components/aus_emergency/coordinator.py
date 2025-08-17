@@ -10,7 +10,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# SA CFS Endpoints
 CFS_INCIDENTS_JSON = "https://data.eso.sa.gov.au/prod/cfs/criimson/cfs_current_incidents.json"
 
 class CFSDataCoordinator(DataUpdateCoordinator):
