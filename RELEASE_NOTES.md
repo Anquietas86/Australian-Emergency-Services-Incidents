@@ -1,14 +1,15 @@
-# v0.1.16 – SA CFS/SES (geo-only) stable
+# Release Notes
 
-**Release date:** 2025-08-11
+## v0.1.21 — 2025-08-19
+- Add lifecycle events (created/updated/removed) with rich payloads
+- Add timestamps (first_seen/last_seen/last_changed)
+- Normalize severity and add notification-ready title/summary
+- Add map links to attributes
+- Active incidents sensor: counts by severity + richer attributes
+- Add `aus_emergency.refresh` service
 
-## What's new
-- Stable release of South Australia **CFS** incidents integration.
-- Includes **SES** incidents from the same feed.
-- Entities created as `geo_location` entries for map display.
-- Option to remove stale incidents (delete or mark unavailable).
-- Configurable polling interval (default 10 minutes).
+## v0.1.20
+- Add always-present Active incidents sensor (count + incidents list)
 
-## Notes
-- Domain remains `aus_emergency` for compatibility.
-- Project name set to "Australian Emergency Services Incidents" ahead of multi-state support.
+## v0.1.16
+- Stable SA (CFS/SES) geolocation entities release

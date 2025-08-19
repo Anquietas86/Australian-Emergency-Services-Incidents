@@ -24,3 +24,9 @@ ATTR_AIRCRAFT = "aircraft"
 ATTR_DATE = "date"
 ATTR_TIME = "time"
 ATTR_AGENCY = "agency"
+
+EVENT_CREATED = "aus_emergency_incident_created"
+EVENT_UPDATED = "aus_emergency_incident_updated"
+EVENT_REMOVED = "aus_emergency_incident_removed"
+
+SERVICE_REFRESH = "refresh"
