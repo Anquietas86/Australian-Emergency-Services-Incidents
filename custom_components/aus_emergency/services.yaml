@@ -1,0 +1,3 @@
+refresh:
+  description: Forces an immediate refresh of all incident data from the source.
+  fields: {}

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -32,7 +31,14 @@ class CFSDataCoordinator(DataUpdateCoordinator):
         try:
             async with self._session.get(CFS_INCIDENTS_JSON, timeout=30) as resp:
                 if resp.status == 200:
-                    incidents = await resp.json()
+                    data = await resp.json()
+                    if isinstance(data, dict) and "results" in data:
+                        incidents = data["results"]
+                    elif isinstance(data, list):
+                        incidents = data
+                    else:
+                        _LOGGER.warning("CFS incidents JSON is in an unexpected format or empty")
+                        incidents = []
                 else:
                     _LOGGER.warning("CFS incidents returned HTTP %s", resp.status)
         except Exception as exc:
