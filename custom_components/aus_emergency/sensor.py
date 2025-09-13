@@ -21,6 +21,7 @@ from .const import (
     ATTR_LEVEL,
     ATTR_LOCATION_NAME,
     ATTR_INCIDENT_NO,
+    SOURCE_SA_CFS,
 )
 from .coordinator import CFSDataCoordinator
 from .cap_coordinator import CFSCAPDataCoordinator
