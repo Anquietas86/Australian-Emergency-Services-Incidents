@@ -195,7 +195,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
                     return alert
         return None
 
-        @property
+    @property
     def _centroid(self) -> tuple[float, float] | None:
         """Calculate the centroid of the alert area."""
         alert = self._alert_data
@@ -243,13 +243,13 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
     @property
     def latitude(self) -> float | None:
-        if centroid := self._centroid():
+        if centroid := self._centroid:
             return centroid[0]
         return None
 
     @property
     def longitude(self) -> float | None:
-        if centroid := self._centroid():
+        if centroid := self._centroid:
             return centroid[1]
         return None
 
@@ -260,8 +260,6 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     @property
     def available(self) -> bool:
         return super().available and self._alert_data is not None
-
-
 class CFSIncidentEntity(GeolocationEvent):
     def __init__(
         self, hass: HomeAssistant, item: Dict[str, Any], unique_id: str
