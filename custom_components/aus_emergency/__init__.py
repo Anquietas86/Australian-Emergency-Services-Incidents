@@ -1,5 +1,6 @@
-
 from __future__ import annotations
+
+import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -8,6 +9,8 @@ from homeassistant.const import Platform
 from .const import DOMAIN, SERVICE_REFRESH
 
 PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR]
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
@@ -21,8 +24,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for cb in hass.data.get(DOMAIN, {}).get("refresh_cbs", []):
             try:
                 await cb()
-            except Exception:
-                pass
+            except Exception as ex:
+                _LOGGER.error("Error during refresh: %s", ex)
 
     if not hass.services.has_service(DOMAIN, SERVICE_REFRESH):
         hass.services.async_register(DOMAIN, SERVICE_REFRESH, _handle_refresh)

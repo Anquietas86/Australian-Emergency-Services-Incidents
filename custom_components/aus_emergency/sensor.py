@@ -18,33 +18,17 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     SOURCE_SA_CFS,
-    ATTR_INCIDENT_NO,
+    DEVICE_INFO_SA_CFS,
+    ATTR_SEVERITY,
     ATTR_TYPE,
     ATTR_STATUS,
     ATTR_LEVEL,
-    ATTR_REGION,
     ATTR_LOCATION_NAME,
-    ATTR_MESSAGE_LINK,
-    ATTR_DATE,
-    ATTR_TIME,
-    ATTR_AGENCY,
+    ATTR_INCIDENT_NO,
 )
 from .coordinator import CFSDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _norm(level: str | None, status: str | None) -> str:
-    t = (str(level) or str(status) or "").lower()
-    if "emergency" in t:
-        return "emergency_warning"
-    if "watch" in t:
-        return "watch_and_act"
-    if "advice" in t:
-        return "advice"
-    if "safe" in t or "all clear" in t:
-        return "all_clear"
-    return "info"
 
 
 async def async_setup_entry(
@@ -60,16 +44,9 @@ async def async_setup_entry(
     summary_sensor = IncidentSummarySensor(coordinator, entry)
     async_add_entities([sensor, summary_sensor], update_before_add=True)
 
-    async def _periodic_update(now):
-        await coordinator.async_request_refresh()
-        sensor.async_write_ha_state()
-
-    async_track_time_interval(hass, _periodic_update, timedelta(seconds=update_seconds))
-
     # Allow aus_emergency.refresh to trigger an immediate update
     async def _refresh_cb():
         await coordinator.async_request_refresh()
-        sensor.async_write_ha_state()
 
     hass.data.setdefault(DOMAIN, {}).setdefault("refresh_cbs", []).append(_refresh_cb)
 
@@ -79,57 +56,26 @@ class ActiveIncidentsSensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity)
     _attr_name = "Active incidents"
     _attr_icon = "mdi:alert"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_info = DEVICE_INFO_SA_CFS
 
     def __init__(self, coordinator: CFSDataCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_active_incidents"
         self._source = SOURCE_SA_CFS
-        self._last_summary_ts = None
 
     @property
     def native_value(self) -> int:
-        return len(self._current_incidents())
+        return len(self.incidents)
 
-    def _current_incidents(self) -> List[Dict[str, Any]]:
+    @property
+    def incidents(self) -> List[Dict[str, Any]]:
         data = self.coordinator.data or {}
-        incidents = data.get("incidents", []) or []
-        parsed: List[Dict[str, Any]] = []
-        for item in incidents:
-            inc_no = (item.get("IncidentNo") or "").strip() or None
-            lat = lon = None
-            loc = item.get("Location")
-            if isinstance(loc, str) and "," in loc:
-                parts = [p.strip() for p in loc.split(",")]
-                if len(parts) == 2:
-                    try:
-                        lat = float(parts[0])
-                        lon = float(parts[1])
-                    except Exception:
-                        pass
-            sev = _norm(item.get("Level"), item.get("Status"))
-            parsed.append(
-                {
-                    ATTR_INCIDENT_NO: inc_no,
-                    ATTR_TYPE: item.get("Type"),
-                    ATTR_STATUS: item.get("Status"),
-                    ATTR_LEVEL: item.get("Level"),
-                    "severity": sev,
-                    ATTR_LOCATION_NAME: item.get("Location_name"),
-                    ATTR_REGION: item.get("Region"),
-                    ATTR_DATE: item.get("Date"),
-                    ATTR_TIME: item.get("Time"),
-                    ATTR_MESSAGE_LINK: item.get("Message_link"),
-                    ATTR_AGENCY: item.get("Service") or item.get("Agency"),
-                    "latitude": lat,
-                    "longitude": lon,
-                }
-            )
-        return parsed
+        return data.get("incidents", []) or []
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        incidents = self._current_incidents()
+        incidents = self.incidents
         counts = {
             "total": len(incidents),
             "info": 0,
@@ -139,24 +85,14 @@ class ActiveIncidentsSensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity)
             "all_clear": 0,
         }
         for p in incidents:
-            sev = p.get("severity", "info")
+            sev = p.get(ATTR_SEVERITY, "info")
             counts[sev] = counts.get(sev, 0) + 1
 
-        self._last_summary_ts = dt_now().isoformat()
         return {
             "source": self._source,
-            "summary_generated": self._last_summary_ts,
+            "summary_generated": dt_now().isoformat(),
             "counts": counts,
             "incidents": incidents,
-        }
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {("aus_emergency", "sa_cfs")},
-            "name": "Australian Emergency (SA)",
-            "manufacturer": "SA CFS / SES",
-            "model": "CRIIMSON Feed",
         }
 
 
@@ -165,6 +101,7 @@ class IncidentSummarySensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity)
     _attr_name = "Incident summary"
     _attr_icon = "mdi:alert-decagram"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_info = DEVICE_INFO_SA_CFS
 
     def __init__(self, coordinator: CFSDataCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -173,45 +110,43 @@ class IncidentSummarySensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity)
         self._source = SOURCE_SA_CFS
 
     @property
-    def native_value(self) -> str:
-        try:
-            if self.coordinator.data is None:
-                _LOGGER.debug("Incident summary: Coordinator data is None")
-                return "No active incidents."
-
-            incidents = self.coordinator.data.get("incidents", [])
-            if not incidents:
-                return "No active incidents."
-
-            spoken = []
-            # Limit to 1 incident to stay under 255 chars
-            for item in incidents[:1]:
-                itype = item.get("Type") or ""
-                title = item.get("Location_name") or item.get("IncidentNo") or "Incident"
-                status = item.get("Status") or item.get("Level") or "Unknown"
-                region = item.get("Region")
-                loc = f" near {region}" if region else ""
-                prefix = f"{itype} " if itype else ""
-                spoken.append(f"{prefix}{title}{loc} is {status}.")
-
-            more = len(incidents) - len(spoken)
-            tail = f" Plus {more} more." if more > 0 else ""
-            summary = f"Incidents: {len(incidents)}. " + " ".join(spoken) + tail
-
-            # Final check to prevent error
-            if len(summary) > 255:
-                summary = summary[:252] + "..."
-
-            return summary
-        except Exception as e:
-            _LOGGER.error("Error generating incident summary: %s", e)
-            return "Error generating summary"
+    def incidents(self) -> List[Dict[str, Any]]:
+        data = self.coordinator.data or {}
+        return data.get("incidents", []) or []
 
     @property
-    def device_info(self):
-        return {
-            "identifiers": {("aus_emergency", "sa_cfs")},
-            "name": "Australian Emergency (SA)",
-            "manufacturer": "SA CFS / SES",
-            "model": "CRIIMSON Feed",
-        }
+    def native_value(self) -> str:
+        incidents = self.incidents
+        if not incidents:
+            return "No active incidents."
+
+        spoken = []
+        # Limit to what will fit in 255 chars
+        for item in incidents:
+            itype = item.get(ATTR_TYPE) or ""
+            title = (
+                item.get(ATTR_LOCATION_NAME)
+                or item.get(ATTR_INCIDENT_NO)
+                or "Incident"
+            )
+            status = item.get(ATTR_STATUS) or item.get(ATTR_LEVEL) or "Unknown"
+            prefix = f"{itype} " if itype else ""
+            next_incident = f"{prefix}{title} is {status}."
+
+            # Check if adding the next incident exceeds the limit
+            if (
+                len(f"Incidents: {len(incidents)}. " + " ".join(spoken) + next_incident)
+                > 250
+            ):
+                break
+            spoken.append(next_incident)
+
+        more = len(incidents) - len(spoken)
+        tail = f" Plus {more} more." if more > 0 else ""
+        summary = f"Incidents: {len(incidents)}. " + " ".join(spoken) + tail
+
+        # Final check to prevent error
+        if len(summary) > 255:
+            summary = summary[:252] + "..."
+
+        return summary

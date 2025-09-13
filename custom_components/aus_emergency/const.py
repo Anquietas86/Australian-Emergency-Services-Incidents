@@ -1,4 +1,3 @@
-
 DOMAIN = "aus_emergency"
 
 CONF_STATE = "state"
@@ -25,8 +24,19 @@ ATTR_DATE = "date"
 ATTR_TIME = "time"
 ATTR_AGENCY = "agency"
 
+ATTR_SEVERITY = "severity"
+ATTR_LATITUDE = "latitude"
+ATTR_LONGITUDE = "longitude"
+
 EVENT_CREATED = "aus_emergency_incident_created"
 EVENT_UPDATED = "aus_emergency_incident_updated"
 EVENT_REMOVED = "aus_emergency_incident_removed"
 
 SERVICE_REFRESH = "refresh"
+
+DEVICE_INFO_SA_CFS = {
+    "identifiers": {("aus_emergency", "sa_cfs")},
+    "name": "Australian Emergency (SA)",
+    "manufacturer": "SA CFS / SES",
+    "model": "CRIIMSON Feed",
+}
