@@ -15,6 +15,22 @@ PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the component."""
+    # This will make sure that the refresh service is available to all entries
+    async def _handle_refresh(call: ServiceCall):
+        """Handle the service call."""
+        _LOGGER.info("Refreshing data from service call")
+        for entry_id in hass.data.get(DOMAIN, {}):
+            if "cfs_coordinator" in hass.data[DOMAIN][entry_id]:
+                await hass.data[DOMAIN][entry_id]["cfs_coordinator"].async_request_refresh()
+            if "cap_coordinator" in hass.data[DOMAIN][entry_id]:
+                await hass.data[DOMAIN][entry_id]["cap_coordinator"].async_request_refresh()
+
+    hass.services.async_register(DOMAIN, SERVICE_REFRESH, _handle_refresh)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Australian Emergency Services Incidents from a config entry."""
     update_seconds = entry.options.get(
@@ -36,16 +52,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await cap_coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    async def _handle_refresh(call: ServiceCall):
-        _LOGGER.debug("Refreshing data from service call")
-        await cfs_coordinator.async_request_refresh()
-        await cap_coordinator.async_request_refresh()
-
-    # This part is for the global refresh service, not entry-specific
-    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH):
-        _LOGGER.debug("Registering refresh service")
-        hass.services.async_register(DOMAIN, SERVICE_REFRESH, _handle_refresh)
 
     return True
 
