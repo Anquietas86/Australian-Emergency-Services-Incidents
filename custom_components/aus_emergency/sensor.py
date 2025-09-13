@@ -35,85 +35,11 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinators = hass.data[DOMAIN][entry.entry_id]
     cfs_coordinator = coordinators["cfs_coordinator"]
-    cap_coordinator = coordinators["cap_coordinator"]
 
     # Existing JSON-based sensors
     sensor = ActiveIncidentsSensor(cfs_coordinator, entry)
     summary_sensor = IncidentSummarySensor(cfs_coordinator, entry)
     async_add_entities([sensor, summary_sensor], update_before_add=True)
-
-    # Manage dynamic CAP alert sensors
-    managed_sensors: Dict[str, CAPAlertSensor] = {}
-
-    def _update_cap_sensors():
-        """Add/remove CAP alert sensors."""
-        new_alerts = cap_coordinator.data.get("alerts", []) if cap_coordinator.data else []
-        new_alert_ids = {alert["id"] for alert in new_alerts}
-
-        # Remove old sensors
-        for alert_id in list(managed_sensors.keys()):
-            if alert_id not in new_alert_ids:
-                hass.async_create_task(managed_sensors[alert_id].async_remove())
-                del managed_sensors[alert_id]
-
-        # Add new sensors
-        new_entities = []
-        for alert in new_alerts:
-            if alert["id"] not in managed_sensors:
-                sensor = CAPAlertSensor(cap_coordinator, entry, alert["id"])
-                managed_sensors[alert["id"]] = sensor
-                new_entities.append(sensor)
-        
-        if new_entities:
-            async_add_entities(new_entities)
-
-    cap_coordinator.async_add_listener(_update_cap_sensors)
-    _update_cap_sensors()
-
-
-class CAPAlertSensor(CoordinatorEntity[CFSCAPDataCoordinator], SensorEntity):
-    _attr_has_entity_name = True
-    _attr_icon = "mdi:alert-outline"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_device_info = DEVICE_INFO_SA_CFS
-
-    def __init__(
-        self, coordinator: CFSCAPDataCoordinator, entry: ConfigEntry, alert_id: str
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._alert_id = alert_id
-        self._attr_unique_id = f"{entry.entry_id}_cap_{alert_id}"
-
-    @property
-    def _alert_data(self) -> Dict[str, Any] | None:
-        """Return the specific alert data for this entity."""
-        if self.coordinator.data:
-            for alert in self.coordinator.data.get("alerts", []):
-                if alert.get("id") == self._alert_id:
-                    return alert
-        return None
-
-    @property
-    def name(self) -> str:
-        if (alert := self._alert_data) and (headline := alert.get("headline")):
-            return f"CAP Alert: {headline}"
-        return "CAP Alert"
-
-    @property
-    def native_value(self) -> str | None:
-        if alert := self._alert_data:
-            return alert.get("event")
-        return None
-
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any] | None:
-        return self._alert_data
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return super().available and self._alert_data is not None
 
 
 class ActiveIncidentsSensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity):

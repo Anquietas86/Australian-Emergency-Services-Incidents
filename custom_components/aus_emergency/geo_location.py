@@ -4,12 +4,16 @@ import logging, hashlib
 from typing import Any, Dict
 from datetime import timedelta
 
+import statistics
+from typing import Any, Dict
+
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.dt import now as dt_now
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
@@ -39,6 +43,7 @@ from .const import (
 )
 
 from .coordinator import CFSDataCoordinator
+from .cap_coordinator import CFSCAPDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,21 +81,21 @@ async def async_setup_entry(
         CONF_REMOVE_STALE, entry.data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE)
     )
 
-    coordinator: CFSDataCoordinator = hass.data[DOMAIN][entry.entry_id][
-        "cfs_coordinator"
-    ]
+    coordinators = hass.data[DOMAIN][entry.entry_id]
+    cfs_coordinator: CFSDataCoordinator = coordinators["cfs_coordinator"]
+    cap_coordinator: CFSCAPDataCoordinator = coordinators["cap_coordinator"]
 
-    entities: dict[str, CFSIncidentEntity] = {}
+    # Incident entities
+    incident_entities: dict[str, CFSIncidentEntity] = {}
 
-    def _sync_entities():
-        data = coordinator.data or {}
+    def _sync_incident_entities():
+        data = cfs_coordinator.data or {}
         incidents = data.get("incidents", [])
         seen_ids: set[str] = set()
 
         for item in incidents:
             inc_no = item.get(ATTR_INCIDENT_NO)
             if not inc_no:
-                # Create a fallback unique ID
                 inc_no = hashlib.sha1(
                     (
                         f"{item.get(ATTR_LOCATION_NAME,'unknown')}-"
@@ -100,22 +105,22 @@ async def async_setup_entry(
 
             seen_ids.add(inc_no)
 
-            ent = entities.get(inc_no)
+            ent = incident_entities.get(inc_no)
             if ent is None:
                 ent = CFSIncidentEntity(hass, item, unique_id=inc_no)
-                entities[inc_no] = ent
+                incident_entities[inc_no] = ent
                 async_add_entities([ent], update_before_add=True)
                 ent.fire_change_event(EVENT_CREATED)
             else:
                 if ent.update_from_item(item):
                     ent.fire_change_event(EVENT_UPDATED)
 
-        stale_ids = [eid for eid in list(entities.keys()) if eid not in seen_ids]
+        stale_ids = [eid for eid in list(incident_entities.keys()) if eid not in seen_ids]
         if stale_ids:
             if remove_stale:
                 registry = er.async_get(hass)
                 for sid in stale_ids:
-                    ent = entities.pop(sid, None)
+                    ent = incident_entities.pop(sid, None)
                     if ent:
                         ent.fire_change_event(EVENT_REMOVED)
                         if ent.entity_id:
@@ -125,13 +130,136 @@ async def async_setup_entry(
                                 _LOGGER.debug("Removed stale geo entity %s", ent.entity_id)
             else:
                 for sid in stale_ids:
-                    ent = entities.pop(sid, None)
+                    ent = incident_entities.pop(sid, None)
                     if ent:
                         ent.mark_stale()
                         ent.fire_change_event(EVENT_REMOVED)
 
-    coordinator.async_add_listener(_sync_entities)
-    _sync_entities()
+    cfs_coordinator.async_add_listener(_sync_incident_entities)
+    _sync_incident_entities()
+
+    # CAP alert entities
+    cap_entities: dict[str, CAPAlertGeolocation] = {}
+
+    def _sync_cap_entities():
+        data = cap_coordinator.data or {}
+        alerts = data.get("alerts", [])
+        seen_ids: set[str] = set()
+
+        for alert in alerts:
+            alert_id = alert.get("id")
+            if not alert_id:
+                continue
+            
+            seen_ids.add(alert_id)
+
+            ent = cap_entities.get(alert_id)
+            if ent is None:
+                ent = CAPAlertGeolocation(cap_coordinator, entry, alert_id)
+                cap_entities[alert_id] = ent
+                async_add_entities([ent], update_before_add=True)
+            else:
+                ent.async_write_ha_state() # Trigger update
+
+        stale_ids = [eid for eid in list(cap_entities.keys()) if eid not in seen_ids]
+        if stale_ids:
+            registry = er.async_get(hass)
+            for sid in stale_ids:
+                ent = cap_entities.pop(sid, None)
+                if ent and ent.entity_id:
+                    registry.async_remove(ent.entity_id)
+                    _LOGGER.debug("Removed stale CAP geo entity %s", ent.entity_id)
+
+    cap_coordinator.async_add_listener(_sync_cap_entities)
+    _sync_cap_entities()
+
+
+class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationEvent):
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:alert"
+    _attr_device_info = DEVICE_INFO_SA_CFS
+
+    def __init__(
+        self, coordinator: CFSCAPDataCoordinator, entry: ConfigEntry, alert_id: str
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._alert_id = alert_id
+        self._attr_unique_id = f"{entry.entry_id}_cap_{alert_id}"
+
+    @property
+    def _alert_data(self) -> Dict[str, Any] | None:
+        if self.coordinator.data:
+            for alert in self.coordinator.data.get("alerts", []):
+                if alert.get("id") == self._alert_id:
+                    return alert
+        return None
+
+    @property
+def _centroid(self) -> tuple[float, float] | None:
+        """Calculate the centroid of the alert area."""
+        alert = self._alert_data
+        if not alert:
+            return None
+
+        all_lats, all_lons = [], []
+
+        for area in alert.get("areas", []):
+            # Handle polygons
+            for poly_str in area.get("polygon", []):
+                points = [p.strip().split(',') for p in poly_str.split(' ')]
+                for lat, lon in points:
+                    try:
+                        all_lats.append(float(lat))
+                        all_lons.append(float(lon))
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Handle circles (use center point)
+            for circle_str in area.get("circle", []):
+                parts = circle_str.replace(',', ' ').split()
+                if len(parts) >= 2:
+                    try:
+                        lat, lon = float(parts[0]), float(parts[1])
+                        all_lats.append(lat)
+                        all_lons.append(lon)
+                    except (ValueError, TypeError):
+                        pass
+
+        if all_lats and all_lons:
+            return statistics.mean(all_lats), statistics.mean(all_lons)
+        
+        return None
+
+    @property
+    def name(self) -> str:
+        if (alert := self._alert_data) and (headline := alert.get("headline")):
+            return f"CAP Alert: {headline}"
+        return "CAP Alert"
+
+    @property
+    def source(self) -> str:
+        return "sa_cfs_cap"
+
+    @property
+    def latitude(self) -> float | None:
+        if centroid := self._centroid():
+            return centroid[0]
+        return None
+
+    @property
+    def longitude(self) -> float | None:
+        if centroid := self._centroid():
+            return centroid[1]
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any] | None:
+        return self._alert_data
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._alert_data is not None
 
 
 class CFSIncidentEntity(GeolocationEvent):

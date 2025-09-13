@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 import aiohttp
 import xml.etree.ElementTree as ET
+import statistics
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -41,35 +42,53 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
                     xml_string = await resp.text()
                     root = ET.fromstring(xml_string)
                     for alert in root.findall("cap:alert", CAP_NS):
+                        alert_id = alert.findtext("cap:identifier", None, CAP_NS)
+                        if not alert_id:
+                            continue
+
+                        # Process the first info block we find
                         info = alert.find("cap:info", CAP_NS)
                         if info is None:
                             continue
 
-                        alert_id = alert.findtext("cap:identifier", None, CAP_NS)
-                        area_desc = info.findtext("cap:area/cap:areaDesc", None, CAP_NS)
-                        headline = info.findtext("cap:headline", None, CAP_NS)
-                        description = info.findtext("cap:description", None, CAP_NS)
-                        instruction = info.findtext("cap:instruction", None, CAP_NS)
-                        severity = info.findtext("cap:severity", "Unknown", CAP_NS)
-                        urgency = info.findtext("cap:urgency", "Unknown", CAP_NS)
-                        certainty = info.findtext("cap:certainty", "Unknown", CAP_NS)
-                        event = info.findtext("cap:event", "Unknown", CAP_NS)
-                        effective = info.findtext("cap:effective", None, CAP_NS)
-                        expires = info.findtext("cap:expires", None, CAP_NS)
+                        # An alert can have multiple areas
+                        areas = []
+                        for area in info.findall("cap:area", CAP_NS):
+                            area_data = {"areaDesc": area.findtext("cap:areaDesc", None, CAP_NS)}
+                            
+                            # Parse polygon
+                            polygons_text = area.findall("cap:polygon", CAP_NS)
+                            polygons = []
+                            for poly_text_elem in polygons_text:
+                                if poly_text_elem.text:
+                                    polygons.append(poly_text_elem.text.strip())
+                            if polygons:
+                                area_data["polygon"] = polygons
+
+                            # Parse circle
+                            circles_text = area.findall("cap:circle", CAP_NS)
+                            circles = []
+                            for circle_text_elem in circles_text:
+                                if circle_text_elem.text:
+                                    circles.append(circle_text_elem.text.strip())
+                            if circles:
+                                area_data["circle"] = circles
+                            
+                            areas.append(area_data)
 
                         alerts.append(
                             {
                                 "id": alert_id,
-                                "areaDesc": area_desc,
-                                "headline": headline,
-                                "description": description,
-                                "instruction": instruction,
-                                ATTR_SEVERITY: severity,
-                                "urgency": urgency,
-                                "certainty": certainty,
-                                "event": event,
-                                "effective": effective,
-                                "expires": expires,
+                                "areas": areas,
+                                "headline": info.findtext("cap:headline", None, CAP_NS),
+                                "description": info.findtext("cap:description", None, CAP_NS),
+                                "instruction": info.findtext("cap:instruction", None, CAP_NS),
+                                ATTR_SEVERITY: info.findtext("cap:severity", "Unknown", CAP_NS),
+                                "urgency": info.findtext("cap:urgency", "Unknown", CAP_NS),
+                                "certainty": info.findtext("cap:certainty", "Unknown", CAP_NS),
+                                "event": info.findtext("cap:event", "Unknown", CAP_NS),
+                                "effective": info.findtext("cap:effective", None, CAP_NS),
+                                "expires": info.findtext("cap:expires", None, CAP_NS),
                             }
                         )
                 else:
