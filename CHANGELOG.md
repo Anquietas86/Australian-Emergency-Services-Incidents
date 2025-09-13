@@ -1,4 +1,5 @@
 ## Changelog
+- 0.1.23: Add support for SA CFS CAP alerts
 - 0.1.22: Refactor and improve integration
   - Centralized data processing in the coordinator.
   - Improved incident summary to be more dynamic.
