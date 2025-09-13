@@ -36,7 +36,7 @@ SERVICE_REFRESH = "refresh"
 
 DEVICE_INFO_SA_CFS = {
     "identifiers": {("aus_emergency", "sa_cfs")},
-    "name": "Australian Emergency (SA)",
-    "manufacturer": "SA CFS / SES",
+    "name": "MFS / CFS / SES",
+    "manufacturer": "SA Government",
     "model": "CRIIMSON Feed",
 }
