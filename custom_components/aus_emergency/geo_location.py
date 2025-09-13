@@ -208,10 +208,10 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
             # Handle polygons
             for poly_str in area.get("polygon", []):
                 points = [p.strip().split(',') for p in poly_str.split(' ')]
-                for lat, lon in points:
+                for lat_str, lon_str in points:
                     try:
-                        all_lats.append(float(lat))
-                        all_lons.append(float(lon))
+                        all_lats.append(float(lat_str))
+                        all_lons.append(float(lon_str))
                     except (ValueError, TypeError):
                         pass
             
