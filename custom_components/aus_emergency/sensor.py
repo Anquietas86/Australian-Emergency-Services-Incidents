@@ -9,15 +9,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util.dt import now as dt_now
 
 from .const import (
     DOMAIN,
-    CONF_UPDATE_INTERVAL,
-    DEFAULT_UPDATE_INTERVAL,
-    SOURCE_SA_CFS,
     DEVICE_INFO_SA_CFS,
     ATTR_SEVERITY,
     ATTR_TYPE,
@@ -35,22 +31,15 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ):
-    update_seconds = entry.options.get(
-        CONF_UPDATE_INTERVAL,
-        entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
-    )
-    
-    # Existing JSON coordinator
-    coordinator = CFSDataCoordinator(hass, update_seconds)
-    await coordinator.async_config_entry_first_refresh()
+    """Set up the sensor platform."""
+    coordinators = hass.data[DOMAIN][entry.entry_id]
+    cfs_coordinator = coordinators["cfs_coordinator"]
+    cap_coordinator = coordinators["cap_coordinator"]
 
-    sensor = ActiveIncidentsSensor(coordinator, entry)
-    summary_sensor = IncidentSummarySensor(coordinator, entry)
+    # Existing JSON-based sensors
+    sensor = ActiveIncidentsSensor(cfs_coordinator, entry)
+    summary_sensor = IncidentSummarySensor(cfs_coordinator, entry)
     async_add_entities([sensor, summary_sensor], update_before_add=True)
-
-    # New CAP coordinator
-    cap_coordinator = CFSCAPDataCoordinator(hass, update_seconds)
-    await cap_coordinator.async_config_entry_first_refresh()
 
     # Manage dynamic CAP alert sensors
     managed_sensors: Dict[str, CAPAlertSensor] = {}
@@ -79,14 +68,6 @@ async def async_setup_entry(
 
     cap_coordinator.async_add_listener(_update_cap_sensors)
     _update_cap_sensors()
-
-
-    # Allow aus_emergency.refresh to trigger an immediate update for both coordinators
-    async def _refresh_cb():
-        await coordinator.async_request_refresh()
-        await cap_coordinator.async_request_refresh()
-
-    hass.data.setdefault(DOMAIN, {}).setdefault("refresh_cbs", []).append(_refresh_cb)
 
 
 class CAPAlertSensor(CoordinatorEntity[CFSCAPDataCoordinator], SensorEntity):

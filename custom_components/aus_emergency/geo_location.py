@@ -8,19 +8,34 @@ from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.dt import now as dt_now
 
 from .const import (
     DOMAIN,
-    CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL,
-    CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE,
+    CONF_REMOVE_STALE,
+    DEFAULT_REMOVE_STALE,
     SOURCE_SA_CFS,
-    ATTR_INCIDENT_NO, ATTR_TYPE, ATTR_STATUS, ATTR_LEVEL, ATTR_REGION,
-    ATTR_LOCATION_NAME, ATTR_MESSAGE, ATTR_MESSAGE_LINK, ATTR_RESOURCES,
-    ATTR_AIRCRAFT, ATTR_DATE, ATTR_TIME, ATTR_AGENCY,
-    EVENT_CREATED, EVENT_UPDATED, EVENT_REMOVED,
+    ATTR_INCIDENT_NO,
+    ATTR_TYPE,
+    ATTR_STATUS,
+    ATTR_LEVEL,
+    ATTR_REGION,
+    ATTR_LOCATION_NAME,
+    ATTR_MESSAGE,
+    ATTR_MESSAGE_LINK,
+    ATTR_RESOURCES,
+    ATTR_AIRCRAFT,
+    ATTR_DATE,
+    ATTR_TIME,
+    ATTR_AGENCY,
+    EVENT_CREATED,
+    EVENT_UPDATED,
+    EVENT_REMOVED,
+    DEVICE_INFO_SA_CFS,
+    ATTR_LATITUDE,
+    ATTR_LONGITUDE,
+    ATTR_SEVERITY,
 )
 
 from .coordinator import CFSDataCoordinator
@@ -29,22 +44,11 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SOURCE = SOURCE_SA_CFS
 
-def _normalize_severity(level: str | None, status: str | None) -> str:
-    t = (str(level) or str(status) or "").lower()
-    if "emergency" in t:
-        return "emergency_warning"
-    if "watch" in t:
-        return "watch_and_act"
-    if "advice" in t:
-        return "advice"
-    if "safe" in t or "all clear" in t:
-        return "all_clear"
-    return "info"
 
 def _build_title(attrs: dict) -> str:
-    typ = attrs.get("Type") or "Incident"
-    loc = attrs.get("Location_name") or "Unknown location"
-    sev = _normalize_severity(attrs.get("Level"), attrs.get("Status"))
+    typ = attrs.get(ATTR_TYPE) or "Incident"
+    loc = attrs.get(ATTR_LOCATION_NAME) or "Unknown location"
+    sev = attrs.get(ATTR_SEVERITY, "info")
     sev_disp = {
         "emergency_warning": "Emergency",
         "watch_and_act": "Watch and Act",
@@ -54,30 +58,45 @@ def _build_title(attrs: dict) -> str:
     }.get(sev, "Info")
     return f"{typ} – {loc} ({sev_disp})"
 
+
 def _build_summary(attrs: dict) -> str:
-    st = attrs.get("Status") or attrs.get("Level") or "Unknown status"
-    reg = attrs.get("Region") or ""
-    when = (attrs.get("Date") or "") + (" " + (attrs.get("Time") or "") if attrs.get("Time") else "")
+    st = attrs.get(ATTR_STATUS) or attrs.get(ATTR_LEVEL) or "Unknown status"
+    reg = attrs.get(ATTR_REGION) or ""
+    when = (
+        (attrs.get(ATTR_DATE) or "")
+        + (" " + (attrs.get(ATTR_TIME) or "") if attrs.get(ATTR_TIME) else "")
+    )
     return " · ".join([s for s in [st, reg, when] if s])
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
-    update_seconds = entry.options.get(CONF_UPDATE_INTERVAL, entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
-    remove_stale = entry.options.get(CONF_REMOVE_STALE, entry.data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE))
 
-    coordinator = CFSDataCoordinator(hass, update_seconds)
-    await coordinator.async_config_entry_first_refresh()
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+):
+    remove_stale = entry.options.get(
+        CONF_REMOVE_STALE, entry.data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE)
+    )
+
+    coordinator: CFSDataCoordinator = hass.data[DOMAIN][entry.entry_id][
+        "cfs_coordinator"
+    ]
 
     entities: dict[str, CFSIncidentEntity] = {}
 
-    async def _sync_entities(now=None):
+    def _sync_entities():
         data = coordinator.data or {}
         incidents = data.get("incidents", [])
         seen_ids: set[str] = set()
 
         for item in incidents:
-            inc_no = (item.get("IncidentNo") or "").strip()
+            inc_no = item.get(ATTR_INCIDENT_NO)
             if not inc_no:
-                inc_no = f"{item.get('Location_name','unknown')}-{item.get('Date','')}-{item.get('Time','')}"
+                # Create a fallback unique ID
+                inc_no = hashlib.sha1(
+                    (
+                        f"{item.get(ATTR_LOCATION_NAME,'unknown')}-"
+                        f"{item.get(ATTR_DATE,'')}-{item.get(ATTR_TIME,'')}"
+                    ).encode("utf-8")
+                ).hexdigest()
 
             seen_ids.add(inc_no)
 
@@ -111,36 +130,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                         ent.mark_stale()
                         ent.fire_change_event(EVENT_REMOVED)
 
-    await _sync_entities()
-
-    async def _periodic_update(now):
-        await coordinator.async_request_refresh()
-        await _sync_entities()
-
-    async_track_time_interval(hass, _periodic_update, timedelta(seconds=update_seconds))
-
-    async def _refresh_cb():
-        await coordinator.async_request_refresh()
-        await _sync_entities()
-
-    hass.data.setdefault(DOMAIN, {}).setdefault("refresh_cbs", []).append(_refresh_cb)
+    coordinator.async_add_listener(_sync_entities)
+    _sync_entities()
 
 
 class CFSIncidentEntity(GeolocationEvent):
-    def __init__(self, hass: HomeAssistant, item: Dict[str, Any], unique_id: str | None = None) -> None:
+    def __init__(
+        self, hass: HomeAssistant, item: Dict[str, Any], unique_id: str
+    ) -> None:
         self.hass = hass
         self._source = PLATFORM_SOURCE
         self._available = True
         self._attrs: Dict[str, Any] = {}
-        self._latitude: float | None = None
-        self._longitude: float | None = None
+        self._latitude: float | None = item.get(ATTR_LATITUDE)
+        self._longitude: float | None = item.get(ATTR_LONGITUDE)
         self._name: str = "SA CFS Incident"
         self._first_seen = dt_now().isoformat()
         self._last_seen = self._first_seen
         self._last_changed = self._first_seen
 
-        inc_no = (item.get("IncidentNo") or "").strip()
-        self._incident_no = inc_no or (unique_id or "unknown")
+        self._incident_no = unique_id
         self._unique_id = f"{self._source}_{self._incident_no}".lower()
 
         self._last_hash: str | None = None
@@ -148,68 +157,49 @@ class CFSIncidentEntity(GeolocationEvent):
 
     def _calc_hash(self) -> str:
         parts = [
-            str(self._attrs.get("Status") or ""),
-            str(self._attrs.get("Level") or ""),
-            str(self._attrs.get("Type") or ""),
-            str(self._attrs.get("Message_link") or ""),
+            str(self._attrs.get(ATTR_STATUS) or ""),
+            str(self._attrs.get(ATTR_LEVEL) or ""),
+            str(self._attrs.get(ATTR_TYPE) or ""),
+            str(self._attrs.get(ATTR_MESSAGE_LINK) or ""),
             str(self._latitude or ""),
             str(self._longitude or ""),
         ]
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
-    def update_from_item(self, item: Dict[str, Any], first: bool=False) -> bool:
-        loc = item.get("Location")
-        lat = lon = None
-        if isinstance(loc, str) and "," in loc:
-            parts = [p.strip() for p in loc.split(",")]
-            if len(parts) == 2:
-                try:
-                    lat = float(parts[0]); lon = float(parts[1])
-                except Exception:
-                    pass
-        self._latitude = lat
-        self._longitude = lon
+    def update_from_item(self, item: Dict[str, Any], first: bool = False) -> bool:
+        self._latitude = item.get(ATTR_LATITUDE)
+        self._longitude = item.get(ATTR_LONGITUDE)
 
-        self._attrs[ATTR_INCIDENT_NO] = item.get("IncidentNo")
-        self._attrs[ATTR_DATE] = item.get("Date")
-        self._attrs[ATTR_TIME] = item.get("Time")
-        self._attrs[ATTR_MESSAGE] = item.get("Message")
-        self._attrs[ATTR_MESSAGE_LINK] = item.get("Message_link")
-        self._attrs[ATTR_LOCATION_NAME] = item.get("Location_name")
-        self._attrs[ATTR_REGION] = item.get("Region")
-        self._attrs[ATTR_TYPE] = item.get("Type")
-        self._attrs[ATTR_STATUS] = item.get("Status")
-        self._attrs[ATTR_LEVEL] = item.get("Level")
-        self._attrs[ATTR_RESOURCES] = item.get("Resources")
-        self._attrs[ATTR_AIRCRAFT] = item.get("Aircraft")
-        self._attrs[ATTR_AGENCY] = item.get("Service") or item.get("Agency")
+        self._attrs = item.copy()
 
         if self._latitude is not None and self._longitude is not None:
-            self._attrs["map_url"] = f"/map?z=14&lat={self._latitude}&lng={self._longitude}"
-            self._attrs["google_maps_url"] = f"https://maps.google.com/?q={self._latitude},{self._longitude}"
+            self._attrs[
+                "map_url"
+            ] = f"/map?z=14&lat={self._latitude}&lng={self._longitude}"
+            self._attrs[
+                "google_maps_url"
+            ] = f"https://maps.google.com/?q={self._latitude},{self._longitude}"
         else:
             self._attrs["map_url"] = None
             self._attrs["google_maps_url"] = None
 
-        sev = _normalize_severity(self._attrs.get("Level"), self._attrs.get("Status"))
-        self._attrs["severity"] = sev
         self._attrs["title"] = _build_title(self._attrs)
         self._attrs["summary"] = _build_summary(self._attrs)
 
         name_parts = []
-        if item.get("Type"):
-            name_parts.append(item["Type"])
-        if item.get("Location_name"):
-            name_parts.append(item["Location_name"])
-        if item.get("Service") or item.get("Agency"):
-            name_parts.append(item.get("Service") or item.get("Agency"))
+        if item.get(ATTR_TYPE):
+            name_parts.append(item[ATTR_TYPE])
+        if item.get(ATTR_LOCATION_NAME):
+            name_parts.append(item[ATTR_LOCATION_NAME])
+        if item.get(ATTR_AGENCY):
+            name_parts.append(item[ATTR_AGENCY])
         self._name = " - ".join([str(p) for p in name_parts if p]) or "SA CFS Incident"
 
-        self._state = item.get("Status") or item.get("Level")
+        self._state = item.get(ATTR_STATUS) or item.get(ATTR_LEVEL)
 
         self._last_seen = dt_now().isoformat()
         new_hash = self._calc_hash()
-        changed = (self._last_hash is not None and new_hash != self._last_hash)
+        changed = self._last_hash is not None and new_hash != self._last_hash
         if first or changed:
             self._last_changed = self._last_seen
         self._last_hash = new_hash
@@ -223,16 +213,16 @@ class CFSIncidentEntity(GeolocationEvent):
     def fire_change_event(self, event_type: str) -> None:
         payload = {
             "source": self._source,
-            "incident_no": self._attrs.get("IncidentNo"),
-            "status": self._attrs.get("Status"),
-            "level": self._attrs.get("Level"),
-            "severity": self._attrs.get("severity"),
-            "type": self._attrs.get("Type"),
-            "region": self._attrs.get("Region"),
-            "location_name": self._attrs.get("Location_name"),
+            "incident_no": self._attrs.get(ATTR_INCIDENT_NO),
+            "status": self._attrs.get(ATTR_STATUS),
+            "level": self._attrs.get(ATTR_LEVEL),
+            "severity": self._attrs.get(ATTR_SEVERITY),
+            "type": self._attrs.get(ATTR_TYPE),
+            "region": self._attrs.get(ATTR_REGION),
+            "location_name": self._attrs.get(ATTR_LOCATION_NAME),
             "latitude": self._latitude,
             "longitude": self._longitude,
-            "message_link": self._attrs.get("Message_link"),
+            "message_link": self._attrs.get(ATTR_MESSAGE_LINK),
             "changed_at": self._last_seen,
             "hash": self._last_hash,
             "title": self._attrs.get("title"),
@@ -280,7 +270,11 @@ class CFSIncidentEntity(GeolocationEvent):
 
     @property
     def suggested_object_id(self) -> str | None:
-        return f"{self._source}_{self._incident_no}".lower() if self._incident_no else None
+        return (
+            f"{self._source}_{self._incident_no}".lower()
+            if self._incident_no
+            else None
+        )
 
     @property
     def has_entity_name(self) -> bool:
@@ -288,9 +282,4 @@ class CFSIncidentEntity(GeolocationEvent):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {("aus_emergency", "sa_cfs")},
-            "name": "Australian Emergency (SA)",
-            "manufacturer": "SA CFS / SES",
-            "model": "CRIIMSON Feed",
-        }
+        return DEVICE_INFO_SA_CFS
