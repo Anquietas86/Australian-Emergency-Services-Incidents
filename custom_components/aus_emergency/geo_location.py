@@ -195,8 +195,8 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
                     return alert
         return None
 
-    @property
-def _centroid(self) -> tuple[float, float] | None:
+        @property
+    def _centroid(self) -> tuple[float, float] | None:
         """Calculate the centroid of the alert area."""
         alert = self._alert_data
         if not alert:
