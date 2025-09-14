@@ -178,7 +178,6 @@ async def async_setup_entry(
 class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationEvent):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert"
-    _attr_device_info = DEVICE_INFO_SA_CFS
 
     def __init__(
         self, coordinator: CFSCAPDataCoordinator, entry: ConfigEntry, alert_id: str
@@ -239,8 +238,10 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
     @property
     def name(self) -> str:
-        if (alert := self._alert_data) and (headline := alert.get("headline")):
-            return f"CAP Alert: {headline}"
+        if alert := self._alert_data:
+            event = alert.get("event", "Alert")
+            area = alert.get("areas", [{}])[0].get("areaDesc", "Unknown Area")
+            return f"{event} for {area}"
         return "CAP Alert"
 
     @property
@@ -325,9 +326,7 @@ class CFSIncidentEntity(GeolocationEvent):
             name_parts.append(item[ATTR_TYPE])
         if item.get(ATTR_LOCATION_NAME):
             name_parts.append(item[ATTR_LOCATION_NAME])
-        if item.get(ATTR_AGENCY):
-            name_parts.append(item[ATTR_AGENCY])
-        self._name = " - ".join([str(p) for p in name_parts if p]) or "SA CFS Incident"
+        self._name = " at ".join([str(p) for p in name_parts if p]) or "SA CFS Incident"
 
         self._state = item.get(ATTR_STATUS) or item.get(ATTR_LEVEL)
 
