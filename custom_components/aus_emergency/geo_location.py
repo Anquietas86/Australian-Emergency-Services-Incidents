@@ -186,8 +186,10 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         super().__init__(coordinator)
         self._entry = entry
         self._alert_id = alert_id
+        # Use a truncated hash for the unique ID to keep it manageable
         self._alert_hash = hashlib.sha1(alert_id.encode("utf-8")).hexdigest()[:12]
         self._attr_unique_id = f"aus_emergency_cap_{self._alert_hash}"
+        self.entity_id = f"geo_location.aus_emergency_cap_{self._alert_hash}"
         self._attr_object_id = f"aus_emergency_cap_{self._alert_hash}"
         self._attr_has_entity_name = False
 
