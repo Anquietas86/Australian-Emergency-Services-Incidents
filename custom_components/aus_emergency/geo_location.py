@@ -368,10 +368,6 @@ class CFSIncidentEntity(GeolocationEvent):
         self.hass.bus.async_fire(event_type, payload)
 
     @property
-    def unique_id(self) -> str:
-        return self._unique_id
-
-    @property
     def name(self) -> str:
         return self._name
 
