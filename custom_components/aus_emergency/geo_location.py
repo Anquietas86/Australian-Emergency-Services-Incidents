@@ -6,6 +6,7 @@ from datetime import timedelta
 
 import statistics
 from typing import Any, Dict
+import hashlib
 
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
@@ -185,7 +186,9 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         super().__init__(coordinator)
         self._entry = entry
         self._alert_id = alert_id
-        self._attr_unique_id = f"{entry.entry_id}_cap_{alert_id}"
+        # Use a truncated hash for the unique ID to keep it manageable
+        self._alert_hash = hashlib.sha1(alert_id.encode("utf-8")).hexdigest()[:12]
+        self._attr_unique_id = f"aus_emergency_cap_{self._alert_hash}"
 
     @property
     def _alert_data(self) -> Dict[str, Any] | None:
@@ -276,7 +279,7 @@ class CFSIncidentEntity(GeolocationEvent):
         self._last_changed = self._first_seen
 
         self._incident_no = unique_id
-        self._unique_id = f"{self._source}_{self._incident_no}".lower()
+        self._unique_id = f"aus_emergency_{self._incident_no}".lower()
 
         self._last_hash: str | None = None
         self.update_from_item(item, first=True)
@@ -397,7 +400,7 @@ class CFSIncidentEntity(GeolocationEvent):
     @property
     def suggested_object_id(self) -> str | None:
         return (
-            f"{self._source}_{self._incident_no}".lower()
+            f"aus_emergency_{self._incident_no}".lower()
             if self._incident_no
             else None
         )
