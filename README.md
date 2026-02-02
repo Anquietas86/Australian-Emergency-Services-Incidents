@@ -1,69 +1,91 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.1.23
+**Version:** v0.2.0
 
-This Home Assistant custom integration pulls live emergency incidents for **South Australia** from multiple sources and exposes them as:
+This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
-- An always-present **Active incidents** sensor (count + rich attributes)
+- **Sensor** entities for incident counts and summaries
 - **Lifecycle events** for automations
 
-### Data Sources
-- **CFS/SES incidents** via CRIIMSON feed
-- **CAP alerts** (Common Alerting Protocol) from SA Emergency Services
+### Supported Regions
+- **South Australia (SA)**: CFS/SES via CRIIMSON feed + CAP alerts
+- **New South Wales (NSW)**: RFS major incidents
+- **Victoria (VIC)**: Emergency Management Victoria incidents
+- **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts
 
 ### Key Features
-- Lifecycle **events**: `aus_emergency_incident_created|updated|removed` for automation triggers
-- Incident tracking with `first_seen`, `last_seen`, `last_changed` timestamps
-- Normalized **severity levels**: `info | advice | watch_and_act | emergency_warning | all_clear`
-- Rich notification-ready attributes: `title`, `summary`, `map_url`, `google_maps_url`
-- **Active incidents** sensor with counts breakdown by severity
+- **Multi-state support**: Monitor incidents across SA, NSW, VIC, and QLD
+- **Lifecycle events** (`incident_created|updated|removed`) for automation triggers
+- **CAP alert events** (SA) for emergency warnings
+- **Incident tracking**: `first_seen`, `last_seen`, `last_changed` timestamps with duration tracking
+- **Normalized severity levels**: `info | advice | watch_and_act | emergency_warning | all_clear`
+- **Multiple sensor types**:
+  - Active incidents (total count + breakdown by severity)
+  - Incident summary (detailed list with current status)
+  - High severity incidents (emergency warnings and watch & act only)
+- **Zone monitoring**: Optionally track incidents within selected Home Assistant zones
+- **Exponential backoff retry**: Resilient data source polling with automatic backoff on failures
 - **Manual refresh service**: `aus_emergency.refresh` to force immediate data updates
-- Configurable update intervals
+- **Configurable update intervals** (default: 10 minutes)
 
 ## Installation
-1. Clone/download `custom_components/aus_emergency/` to your Home Assistant config directory.
+1. Clone/download `custom_components/aus_emergency/` to your Home Assistant `config/` directory.
 2. Restart Home Assistant.
 3. Navigate to **Settings → Devices & Services → Create Integration** → search for *Australian Emergency Services Incidents*.
-4. Select your state (currently **South Australia (SA)**) and configure your preferences.
+4. Select your state (SA, NSW, VIC, or QLD) and configure your preferences.
 
 ### Configuration Options
-- **State**: Select the emergency service region (currently SA only)
+- **State**: Select the emergency service region:
+  - **SA** (South Australia) — CFS/SES via CRIIMSON + CAP alerts
+  - **NSW** (New South Wales) — RFS major incidents
+  - **VIC** (Victoria) — Emergency Management Victoria
+  - **QLD** (Queensland) — Queensland Fire and Emergency Services
 - **Update Interval**: How frequently to poll for new incidents (default: 10 minutes)
-- **Remove Stale Incidents**: Automatically remove incidents that are no longer active
-
-## Entities Created
+- **Remove Stale Incidents**: Automatically remove incidents no longer in the active feed
+- **Zone Monitoring**: Optional — select Home Assistant zones to monitor incidents within them
 
 ## Entities Created
 
 ### Geolocation Entities
 - One entity per active incident with:
   - Coordinates for map display
-  - Incident type and status
+  - Incident type, status, and severity
   - Location and region information
-  - Agency and resource details
+  - Agency, resource details, and duration
+  - Zone membership (if within monitored zones)
 
 ### Sensor Entities
 - **Active Incidents** (`sensor.active_incidents`): 
   - Total count of active incidents
   - Count breakdown by severity level
   - List of all incident summaries in attributes
+  
+- **Incident Summary** (`sensor.incident_summary`):
+  - Detailed list of all incidents with current status
+  - Rich attributes: incident number, type, severity, location, duration
+  - Useful for dashboards and detailed automation logic
+
+- **High Severity Incidents** (`sensor.*_high_severity_incidents`):
+  - Count of `emergency_warning` and `watch_and_act` incidents only
+  - For critical notification triggers
+
 
 ## Events for Automations
-Listen/trigger on:
-- `aus_emergency_incident_created`
-- `aus_emergency_incident_updated`
-- `aus_emergency_incident_removed`
 
-## Events for Automations
+Create powerful automations by listening to incident lifecycle events. Each state (SA, NSW, VIC, QLD) fires the same core events plus state-specific CAP alerts (SA only).
 
-Create powerful automations by listening to incident lifecycle events:
-
-### Available Events
+### Incident Lifecycle Events
 - `aus_emergency_incident_created` — New incident detected
 - `aus_emergency_incident_updated` — Incident status or details changed
 - `aus_emergency_incident_removed` — Incident resolved/cleared
 
+### CAP Alert Events (SA only)
+- `aus_emergency_cap_alert_created` — New CAP alert issued
+- `aus_emergency_cap_alert_updated` — CAP alert details updated
+- `aus_emergency_cap_alert_removed` — CAP alert expires/clears
+
 ### Event Payload
+
 Each event includes:
 ```json
 {
@@ -77,6 +99,11 @@ Each event includes:
   "region": "Hills & Mid Murray",
   "latitude": -34.7282,
   "longitude": 139.0808,
+  "duration_minutes": 45,
+  "first_seen": "2024-02-02T10:15:00+10:00",
+  "last_seen": "2024-02-02T11:00:00+10:00",
+  "last_changed": "2024-02-02T10:45:00+10:00",
+  "in_zone": ["backyard", "neighborhood"],
   "map_url": "https://...",
   "google_maps_url": "https://maps.google.com/?q=..."
 }
