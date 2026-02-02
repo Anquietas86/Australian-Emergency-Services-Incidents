@@ -1,7 +1,7 @@
 {
   "domain": "aus_emergency",
   "name": "Australian Emergency Services Incidents",
-  "version": "0.1.23",
+  "version": "0.2.0",
   "documentation": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents",
   "issue_tracker": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents/issues",
   "requirements": [

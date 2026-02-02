@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import statistics
-from datetime import timedelta
+from datetime import datetime
 from typing import Any, Dict
 
 from homeassistant.components.geo_location import GeolocationEvent
@@ -11,42 +11,44 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util.dt import now as dt_now
+from homeassistant.util.dt import now as dt_now, parse_datetime
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
     CONF_REMOVE_STALE,
+    CONF_ZONES,
+    CONF_STATE,
     DEFAULT_REMOVE_STALE,
-    SOURCE_SA_CFS,
+    DEFAULT_STATE,
     ATTR_INCIDENT_NO,
     ATTR_TYPE,
     ATTR_STATUS,
     ATTR_LEVEL,
     ATTR_REGION,
     ATTR_LOCATION_NAME,
-    ATTR_MESSAGE,
     ATTR_MESSAGE_LINK,
-    ATTR_RESOURCES,
-    ATTR_AIRCRAFT,
     ATTR_DATE,
     ATTR_TIME,
-    ATTR_AGENCY,
+    ATTR_SEVERITY,
+    ATTR_LATITUDE,
+    ATTR_LONGITUDE,
+    ATTR_DURATION_MINUTES,
+    ATTR_IN_ZONE,
     EVENT_CREATED,
     EVENT_UPDATED,
     EVENT_REMOVED,
+    EVENT_CAP_CREATED,
+    EVENT_CAP_UPDATED,
+    EVENT_CAP_REMOVED,
+    STATE_DEVICE_INFO,
     DEVICE_INFO_SA_CFS,
-    ATTR_LATITUDE,
-    ATTR_LONGITUDE,
-    ATTR_SEVERITY,
 )
 
-from .coordinator import CFSDataCoordinator
+from .coordinator import IncidentDataCoordinator
 from .cap_coordinator import CFSCAPDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-
-PLATFORM_SOURCE = SOURCE_SA_CFS
 
 
 def _build_title(attrs: dict) -> str:
@@ -92,22 +94,80 @@ def _expose_entity_to_voice_assistants(hass: HomeAssistant, entity_id: str) -> N
             _LOGGER.debug("Could not expose %s to voice assistants: %s", entity_id, e)
 
 
+def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zone_entity_id: str) -> bool:
+    """Check if a point is within a Home Assistant zone."""
+    if lat is None or lon is None:
+        return False
+
+    zone_state = hass.states.get(zone_entity_id)
+    if not zone_state:
+        return False
+
+    try:
+        zone_lat = float(zone_state.attributes.get("latitude", 0))
+        zone_lon = float(zone_state.attributes.get("longitude", 0))
+        zone_radius = float(zone_state.attributes.get("radius", 0))  # meters
+    except (ValueError, TypeError):
+        return False
+
+    if zone_radius <= 0:
+        return False
+
+    # Haversine formula for distance
+    from math import radians, sin, cos, sqrt, atan2
+    R = 6371000  # Earth's radius in meters
+
+    lat1, lon1 = radians(lat), radians(lon)
+    lat2, lon2 = radians(zone_lat), radians(zone_lon)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance = R * c
+
+    return distance <= zone_radius
+
+
+def _get_zones_for_point(hass: HomeAssistant, lat: float | None, lon: float | None, zone_ids: list[str]) -> list[str]:
+    """Get list of zone names that contain the given point."""
+    if not zone_ids or lat is None or lon is None:
+        return []
+
+    matching_zones = []
+    for zone_id in zone_ids:
+        if _point_in_zone(hass, lat, lon, zone_id):
+            zone_state = hass.states.get(zone_id)
+            if zone_state:
+                matching_zones.append(zone_state.attributes.get("friendly_name", zone_id))
+
+    return matching_zones
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ):
     remove_stale = entry.options.get(
         CONF_REMOVE_STALE, entry.data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE)
     )
+    monitored_zones = entry.options.get(
+        CONF_ZONES, entry.data.get(CONF_ZONES, [])
+    )
+    state = entry.options.get(
+        CONF_STATE, entry.data.get(CONF_STATE, DEFAULT_STATE)
+    )
+    device_info = STATE_DEVICE_INFO.get(state, DEVICE_INFO_SA_CFS)
 
     coordinators = hass.data[DOMAIN][entry.entry_id]
-    cfs_coordinator: CFSDataCoordinator = coordinators["cfs_coordinator"]
+    incident_coordinator: IncidentDataCoordinator = coordinators["incident_coordinator"]
     cap_coordinator: CFSCAPDataCoordinator = coordinators["cap_coordinator"]
 
     # Incident entities
-    incident_entities: dict[str, CFSIncidentEntity] = {}
+    incident_entities: dict[str, IncidentEntity] = {}
 
     def _sync_incident_entities():
-        data = cfs_coordinator.data or {}
+        data = incident_coordinator.data or {}
         incidents = data.get("incidents", [])
         seen_ids: set[str] = set()
 
@@ -125,13 +185,18 @@ async def async_setup_entry(
 
             ent = incident_entities.get(inc_no)
             if ent is None:
-                ent = CFSIncidentEntity(hass, item, unique_id=inc_no)
+                ent = IncidentEntity(
+                    hass, item, unique_id=inc_no,
+                    source=incident_coordinator.source,
+                    device_info=device_info,
+                    monitored_zones=monitored_zones,
+                )
                 incident_entities[inc_no] = ent
                 async_add_entities([ent], update_before_add=True)
                 ent.fire_change_event(EVENT_CREATED)
                 _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
-                if ent.update_from_item(item):
+                if ent.update_from_item(item, monitored_zones):
                     ent.fire_change_event(EVENT_UPDATED)
 
         stale_ids = [eid for eid in list(incident_entities.keys()) if eid not in seen_ids]
@@ -154,11 +219,12 @@ async def async_setup_entry(
                         ent.mark_stale()
                         ent.fire_change_event(EVENT_REMOVED)
 
-    cfs_coordinator.async_add_listener(_sync_incident_entities)
+    incident_coordinator.async_add_listener(_sync_incident_entities)
     _sync_incident_entities()
 
     # CAP alert entities
     cap_entities: dict[str, CAPAlertGeolocation] = {}
+    cap_hashes: dict[str, str] = {}  # Track CAP alert hashes for change detection
 
     def _sync_cap_entities():
         data = cap_coordinator.data or {}
@@ -169,26 +235,45 @@ async def async_setup_entry(
             alert_id = alert.get("id")
             if not alert_id:
                 continue
-            
+
             seen_ids.add(alert_id)
+
+            # Calculate hash for change detection
+            alert_hash = hashlib.sha1(
+                str(alert).encode("utf-8")
+            ).hexdigest()
 
             ent = cap_entities.get(alert_id)
             if ent is None:
-                ent = CAPAlertGeolocation(cap_coordinator, entry, alert_id)
+                ent = CAPAlertGeolocation(
+                    hass, cap_coordinator, entry, alert_id,
+                    device_info=device_info,
+                    monitored_zones=monitored_zones,
+                )
                 cap_entities[alert_id] = ent
+                cap_hashes[alert_id] = alert_hash
                 async_add_entities([ent], update_before_add=True)
+                ent.fire_change_event(EVENT_CAP_CREATED)
                 _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
-                ent.async_write_ha_state() # Trigger update
+                # Check if alert changed
+                old_hash = cap_hashes.get(alert_id)
+                if old_hash != alert_hash:
+                    cap_hashes[alert_id] = alert_hash
+                    ent.async_write_ha_state()
+                    ent.fire_change_event(EVENT_CAP_UPDATED)
 
         stale_ids = [eid for eid in list(cap_entities.keys()) if eid not in seen_ids]
         if stale_ids:
             registry = er.async_get(hass)
             for sid in stale_ids:
                 ent = cap_entities.pop(sid, None)
-                if ent and ent.entity_id:
-                    registry.async_remove(ent.entity_id)
-                    _LOGGER.debug("Removed stale CAP geo entity %s", ent.entity_id)
+                cap_hashes.pop(sid, None)
+                if ent:
+                    ent.fire_change_event(EVENT_CAP_REMOVED)
+                    if ent.entity_id:
+                        registry.async_remove(ent.entity_id)
+                        _LOGGER.debug("Removed stale CAP geo entity %s", ent.entity_id)
 
     cap_coordinator.async_add_listener(_sync_cap_entities)
     _sync_cap_entities()
@@ -199,17 +284,44 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     _attr_icon = "mdi:alert"
 
     def __init__(
-        self, coordinator: CFSCAPDataCoordinator, entry: ConfigEntry, alert_id: str
+        self,
+        hass: HomeAssistant,
+        coordinator: CFSCAPDataCoordinator,
+        entry: ConfigEntry,
+        alert_id: str,
+        device_info: dict | None = None,
+        monitored_zones: list[str] | None = None,
     ) -> None:
         super().__init__(coordinator)
+        self.hass = hass
         self._entry = entry
         self._alert_id = alert_id
+        self._monitored_zones = monitored_zones or []
+        self._first_seen = dt_now()
         # Use a truncated hash for the unique ID to keep it manageable
         self._alert_hash = hashlib.sha1(alert_id.encode("utf-8")).hexdigest()[:12]
         self._attr_unique_id = f"aus_emergency_cap_{self._alert_hash}"
         self.entity_id = f"geo_location.aus_emergency_cap_{self._alert_hash}"
         self._attr_object_id = f"aus_emergency_cap_{self._alert_hash}"
         self._attr_has_entity_name = False
+        self._attr_device_info = device_info
+
+    def fire_change_event(self, event_type: str) -> None:
+        """Fire a CAP alert change event."""
+        alert = self._alert_data
+        payload = {
+            "source": "cap",
+            "alert_id": self._alert_id,
+            "headline": alert.get("headline") if alert else None,
+            "event": alert.get("event") if alert else None,
+            "severity": alert.get("severity") if alert else None,
+            "urgency": alert.get("urgency") if alert else None,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "first_seen": self._first_seen.isoformat(),
+            "changed_at": dt_now().isoformat(),
+        }
+        self.hass.bus.async_fire(event_type, payload)
 
     @property
     def _alert_data(self) -> Dict[str, Any] | None:
@@ -238,7 +350,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
                         all_lons.append(float(lon_str))
                     except (ValueError, TypeError):
                         pass
-            
+
             # Handle circles (use center point)
             for circle_str in area.get("circle", []):
                 parts = circle_str.replace(',', ' ').split()
@@ -252,7 +364,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
         if all_lats and all_lons:
             return statistics.mean(all_lats), statistics.mean(all_lons)
-        
+
         return None
 
     @property
@@ -265,7 +377,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
     @property
     def source(self) -> str:
-        return "sa_cfs_cap"
+        return "cap"
 
     @property
     def latitude(self) -> float | None:
@@ -281,27 +393,49 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any] | None:
-        return self._alert_data
+        attrs = dict(self._alert_data) if self._alert_data else {}
+
+        # Add duration tracking
+        duration = (dt_now() - self._first_seen).total_seconds() / 60
+        attrs[ATTR_DURATION_MINUTES] = round(duration, 1)
+        attrs["first_seen"] = self._first_seen.isoformat()
+
+        # Add zone membership
+        if self._monitored_zones:
+            matching = _get_zones_for_point(
+                self.hass, self.latitude, self.longitude, self._monitored_zones
+            )
+            attrs[ATTR_IN_ZONE] = matching
+
+        return attrs
 
     @property
     def available(self) -> bool:
         return super().available and self._alert_data is not None
 
 
-class CFSIncidentEntity(GeolocationEvent):
+class IncidentEntity(GeolocationEvent):
     def __init__(
-        self, hass: HomeAssistant, item: Dict[str, Any], unique_id: str
+        self,
+        hass: HomeAssistant,
+        item: Dict[str, Any],
+        unique_id: str,
+        source: str = "unknown",
+        device_info: dict | None = None,
+        monitored_zones: list[str] | None = None,
     ) -> None:
         self.hass = hass
-        self._source = PLATFORM_SOURCE
+        self._source = source
         self._available = True
         self._attrs: Dict[str, Any] = {}
         self._latitude: float | None = item.get(ATTR_LATITUDE)
         self._longitude: float | None = item.get(ATTR_LONGITUDE)
-        self._name: str = "SA CFS Incident"
-        self._first_seen = dt_now().isoformat()
+        self._name: str = "Emergency Incident"
+        self._first_seen = dt_now()
         self._last_seen = self._first_seen
         self._last_changed = self._first_seen
+        self._monitored_zones = monitored_zones or []
+        self._device_info = device_info
 
         self._incident_no = unique_id
         self._attr_unique_id = f"aus_emergency_{self._incident_no}".lower()
@@ -310,7 +444,7 @@ class CFSIncidentEntity(GeolocationEvent):
 
         self._state: str | None = None
         self._last_hash: str | None = None
-        self.update_from_item(item, first=True)
+        self.update_from_item(item, monitored_zones, first=True)
 
     def _calc_hash(self) -> str:
         parts = [
@@ -323,7 +457,12 @@ class CFSIncidentEntity(GeolocationEvent):
         ]
         return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
-    def update_from_item(self, item: Dict[str, Any], first: bool = False) -> bool:
+    def update_from_item(
+        self,
+        item: Dict[str, Any],
+        monitored_zones: list[str] | None = None,
+        first: bool = False
+    ) -> bool:
         self._latitude = item.get(ATTR_LATITUDE)
         self._longitude = item.get(ATTR_LONGITUDE)
 
@@ -348,20 +487,31 @@ class CFSIncidentEntity(GeolocationEvent):
             name_parts.append(item[ATTR_TYPE])
         if item.get(ATTR_LOCATION_NAME):
             name_parts.append(item[ATTR_LOCATION_NAME])
-        self._name = " at ".join([str(p) for p in name_parts if p]) or "SA CFS Incident"
+        self._name = " at ".join([str(p) for p in name_parts if p]) or "Emergency Incident"
 
         self._state = item.get(ATTR_STATUS) or item.get(ATTR_LEVEL)
 
-        self._last_seen = dt_now().isoformat()
+        now = dt_now()
+        self._last_seen = now
         new_hash = self._calc_hash()
         changed = self._last_hash is not None and new_hash != self._last_hash
         if first or changed:
             self._last_changed = self._last_seen
         self._last_hash = new_hash
 
-        self._attrs["first_seen"] = self._first_seen
-        self._attrs["last_seen"] = self._last_seen
-        self._attrs["last_changed"] = self._last_changed
+        # Calculate duration in minutes
+        duration = (now - self._first_seen).total_seconds() / 60
+        self._attrs[ATTR_DURATION_MINUTES] = round(duration, 1)
+
+        self._attrs["first_seen"] = self._first_seen.isoformat()
+        self._attrs["last_seen"] = self._last_seen.isoformat()
+        self._attrs["last_changed"] = self._last_changed.isoformat()
+
+        # Check zone membership
+        zones = monitored_zones or self._monitored_zones
+        if zones:
+            matching = _get_zones_for_point(self.hass, self._latitude, self._longitude, zones)
+            self._attrs[ATTR_IN_ZONE] = matching
 
         return changed
 
@@ -378,13 +528,15 @@ class CFSIncidentEntity(GeolocationEvent):
             "latitude": self._latitude,
             "longitude": self._longitude,
             "message_link": self._attrs.get(ATTR_MESSAGE_LINK),
-            "changed_at": self._last_seen,
+            "changed_at": self._last_seen.isoformat(),
             "hash": self._last_hash,
             "title": self._attrs.get("title"),
             "summary": self._attrs.get("summary"),
-            "first_seen": self._first_seen,
-            "last_seen": self._last_seen,
-            "last_changed": self._last_changed,
+            "first_seen": self._first_seen.isoformat(),
+            "last_seen": self._last_seen.isoformat(),
+            "last_changed": self._last_changed.isoformat(),
+            ATTR_DURATION_MINUTES: self._attrs.get(ATTR_DURATION_MINUTES),
+            ATTR_IN_ZONE: self._attrs.get(ATTR_IN_ZONE, []),
         }
         self.hass.bus.async_fire(event_type, payload)
 
@@ -429,4 +581,4 @@ class CFSIncidentEntity(GeolocationEvent):
 
     @property
     def device_info(self):
-        return DEVICE_INFO_SA_CFS
+        return self._device_info

@@ -3,12 +3,19 @@
   "config": {
     "step": {
       "user": {
-        "title": "Australian Emergency (SA)",
-        "description": "Choose your state and options.",
+        "title": "Australian Emergency Services",
+        "description": "Configure emergency incident tracking for your state.",
         "data": {
           "state": "State",
           "update_interval": "Update interval (seconds)",
-          "remove_stale": "Remove stale incidents from HA"
+          "remove_stale": "Remove stale incidents from HA",
+          "zones": "Monitor zones (optional)"
+        },
+        "data_description": {
+          "state": "Select which Australian state to monitor for emergency incidents",
+          "update_interval": "How often to poll for new incidents (default: 600 seconds)",
+          "remove_stale": "Remove incident entities when they are no longer active, instead of marking them unavailable",
+          "zones": "Select Home Assistant zones to filter incidents. Incidents will show which zones they fall within."
         }
       }
     }
@@ -20,7 +27,14 @@
         "data": {
           "state": "State",
           "update_interval": "Update interval (seconds)",
-          "remove_stale": "Remove stale incidents from HA"
+          "remove_stale": "Remove stale incidents from HA",
+          "zones": "Monitor zones"
+        },
+        "data_description": {
+          "state": "Select which Australian state to monitor",
+          "update_interval": "How often to poll for new incidents",
+          "remove_stale": "Remove incident entities when no longer active",
+          "zones": "Incidents will show which of these zones they fall within"
         }
       }
     }

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List
-from datetime import timedelta
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -14,6 +13,9 @@ from homeassistant.util.dt import now as dt_now
 
 from .const import (
     DOMAIN,
+    CONF_STATE,
+    DEFAULT_STATE,
+    STATE_DEVICE_INFO,
     DEVICE_INFO_SA_CFS,
     ATTR_SEVERITY,
     ATTR_TYPE,
@@ -21,10 +23,9 @@ from .const import (
     ATTR_LEVEL,
     ATTR_LOCATION_NAME,
     ATTR_INCIDENT_NO,
-    SOURCE_SA_CFS,
+    HIGH_SEVERITY_LEVELS,
 )
-from .coordinator import CFSDataCoordinator
-from .cap_coordinator import CFSCAPDataCoordinator
+from .coordinator import IncidentDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,26 +35,35 @@ async def async_setup_entry(
 ):
     """Set up the sensor platform."""
     coordinators = hass.data[DOMAIN][entry.entry_id]
-    cfs_coordinator = coordinators["cfs_coordinator"]
+    incident_coordinator = coordinators["incident_coordinator"]
 
-    # Existing JSON-based sensors
-    sensor = ActiveIncidentsSensor(cfs_coordinator, entry)
-    summary_sensor = IncidentSummarySensor(cfs_coordinator, entry)
-    async_add_entities([sensor, summary_sensor], update_before_add=True)
+    state = entry.options.get(CONF_STATE, entry.data.get(CONF_STATE, DEFAULT_STATE))
+    device_info = STATE_DEVICE_INFO.get(state, DEVICE_INFO_SA_CFS)
+
+    sensors = [
+        ActiveIncidentsSensor(incident_coordinator, entry, device_info),
+        IncidentSummarySensor(incident_coordinator, entry, device_info),
+        HighSeverityIncidentsSensor(incident_coordinator, entry, device_info),
+    ]
+    async_add_entities(sensors, update_before_add=True)
 
 
-class ActiveIncidentsSensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity):
+class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_name = "Active incidents"
     _attr_icon = "mdi:alert"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_device_info = DEVICE_INFO_SA_CFS
 
-    def __init__(self, coordinator: CFSDataCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        coordinator: IncidentDataCoordinator,
+        entry: ConfigEntry,
+        device_info: dict,
+    ) -> None:
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_active_incidents"
-        self._source = SOURCE_SA_CFS
+        self._attr_device_info = device_info
 
     @property
     def native_value(self) -> int:
@@ -80,25 +90,82 @@ class ActiveIncidentsSensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity)
             counts[sev] = counts.get(sev, 0) + 1
 
         return {
-            "source": self._source,
+            "source": self.coordinator.source,
             "summary_generated": dt_now().isoformat(),
             "counts": counts,
             "incidents": incidents,
         }
 
 
-class IncidentSummarySensor(CoordinatorEntity[CFSDataCoordinator], SensorEntity):
+class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
+    """Sensor that tracks only high-severity incidents (emergency_warning, watch_and_act)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "High severity incidents"
+    _attr_icon = "mdi:alert-octagon"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: IncidentDataCoordinator,
+        entry: ConfigEntry,
+        device_info: dict,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_high_severity_incidents"
+        self._attr_device_info = device_info
+
+    @property
+    def incidents(self) -> List[Dict[str, Any]]:
+        data = self.coordinator.data or {}
+        all_incidents = data.get("incidents", []) or []
+        return [
+            inc for inc in all_incidents
+            if inc.get(ATTR_SEVERITY) in HIGH_SEVERITY_LEVELS
+        ]
+
+    @property
+    def native_value(self) -> int:
+        return len(self.incidents)
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        incidents = self.incidents
+        counts = {
+            "emergency_warning": 0,
+            "watch_and_act": 0,
+        }
+        for p in incidents:
+            sev = p.get(ATTR_SEVERITY)
+            if sev in counts:
+                counts[sev] += 1
+
+        return {
+            "source": self.coordinator.source,
+            "summary_generated": dt_now().isoformat(),
+            "counts": counts,
+            "incidents": incidents,
+            "severity_levels": HIGH_SEVERITY_LEVELS,
+        }
+
+
+class IncidentSummarySensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_name = "Incident summary"
     _attr_icon = "mdi:alert-decagram"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_device_info = DEVICE_INFO_SA_CFS
 
-    def __init__(self, coordinator: CFSDataCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        coordinator: IncidentDataCoordinator,
+        entry: ConfigEntry,
+        device_info: dict,
+    ) -> None:
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_incident_summary"
-        self._source = SOURCE_SA_CFS
+        self._attr_device_info = device_info
 
     @property
     def incidents(self) -> List[Dict[str, Any]]:
