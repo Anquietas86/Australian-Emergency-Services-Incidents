@@ -5,7 +5,8 @@
   "documentation": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents",
   "issue_tracker": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents/issues",
   "requirements": [
-    "aiohttp"
+    "aiohttp",
+    "defusedxml"
   ],
   "codeowners": [
     "@Anquietas86"

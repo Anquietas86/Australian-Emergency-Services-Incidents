@@ -5,7 +5,7 @@ from datetime import timedelta
 import aiohttp
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     ATTR_INCIDENT_NO,
@@ -70,8 +70,11 @@ class CFSDataCoordinator(DataUpdateCoordinator):
                         incidents = []
                 else:
                     _LOGGER.warning("CFS incidents returned HTTP %s", resp.status)
+        except aiohttp.ClientError as exc:
+            raise UpdateFailed(f"Error fetching CFS incidents: {exc}") from exc
         except Exception as exc:
-            _LOGGER.error("Error fetching CFS incidents: %s", exc)
+            _LOGGER.error("Unexpected error fetching CFS incidents: %s", exc)
+            raise UpdateFailed(f"Unexpected error: {exc}") from exc
 
         for item in incidents:
             inc_no = (item.get("IncidentNo") or "").strip() or None

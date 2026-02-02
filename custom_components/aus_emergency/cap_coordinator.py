@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 import aiohttp
-import xml.etree.ElementTree as ET
-import statistics
+from defusedxml import ElementTree as ET
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     ATTR_SEVERITY,
@@ -93,8 +92,13 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
                         )
                 else:
                     _LOGGER.warning("CFS CAP feed returned HTTP %s", resp.status)
+        except aiohttp.ClientError as exc:
+            raise UpdateFailed(f"Error fetching CFS CAP feed: {exc}") from exc
+        except ET.ParseError as exc:
+            raise UpdateFailed(f"Error parsing CAP XML: {exc}") from exc
         except Exception as exc:
-            _LOGGER.error("Error fetching CFS CAP feed: %s", exc)
+            _LOGGER.error("Unexpected error fetching CFS CAP feed: %s", exc)
+            raise UpdateFailed(f"Unexpected error: {exc}") from exc
 
         return {"alerts": alerts}
 

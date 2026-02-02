@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import logging, hashlib
-from typing import Any, Dict
-from datetime import timedelta
-
-import statistics
-from typing import Any, Dict
 import hashlib
+import logging
+import statistics
+from datetime import timedelta
+from typing import Any, Dict
 
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
@@ -75,6 +73,25 @@ def _build_summary(attrs: dict) -> str:
     return " · ".join([s for s in [st, reg, when] if s])
 
 
+def _expose_entity_to_voice_assistants(hass: HomeAssistant, entity_id: str) -> None:
+    """Expose an entity to voice assistants."""
+    registry = er.async_get(hass)
+    if entity_id and registry.async_get(entity_id):
+        try:
+            registry.async_update_entity_options(
+                entity_id,
+                "conversation",
+                {"should_expose": True}
+            )
+            registry.async_update_entity_options(
+                entity_id,
+                "cloud.google_assistant",
+                {"should_expose": True}
+            )
+        except Exception as e:
+            _LOGGER.debug("Could not expose %s to voice assistants: %s", entity_id, e)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ):
@@ -112,6 +129,7 @@ async def async_setup_entry(
                 incident_entities[inc_no] = ent
                 async_add_entities([ent], update_before_add=True)
                 ent.fire_change_event(EVENT_CREATED)
+                _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
                 if ent.update_from_item(item):
                     ent.fire_change_event(EVENT_UPDATED)
@@ -159,6 +177,7 @@ async def async_setup_entry(
                 ent = CAPAlertGeolocation(cap_coordinator, entry, alert_id)
                 cap_entities[alert_id] = ent
                 async_add_entities([ent], update_before_add=True)
+                _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
                 ent.async_write_ha_state() # Trigger update
 
@@ -267,6 +286,8 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     @property
     def available(self) -> bool:
         return super().available and self._alert_data is not None
+
+
 class CFSIncidentEntity(GeolocationEvent):
     def __init__(
         self, hass: HomeAssistant, item: Dict[str, Any], unique_id: str
@@ -287,6 +308,7 @@ class CFSIncidentEntity(GeolocationEvent):
         self._attr_object_id = f"aus_emergency_{self._incident_no}".lower()
         self._attr_has_entity_name = False
 
+        self._state: str | None = None
         self._last_hash: str | None = None
         self.update_from_item(item, first=True)
 
