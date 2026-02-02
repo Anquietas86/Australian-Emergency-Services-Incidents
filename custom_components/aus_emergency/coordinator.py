@@ -166,7 +166,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
     async def _parse_sa_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse SA CFS JSON format."""
-        data = await resp.json()
+        data = await resp.json(content_type=None)
         incidents = []
 
         if isinstance(data, dict) and "results" in data:
@@ -216,7 +216,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
     async def _parse_nsw_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse NSW RFS GeoJSON format."""
-        data = await resp.json()
+        data = await resp.json(content_type=None)
         incidents = []
 
         features = data.get("features", [])
@@ -272,7 +272,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
     async def _parse_vic_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse VIC EMV JSON format."""
-        data = await resp.json()
+        data = await resp.json(content_type=None)
         incidents = []
 
         # VIC format has results array
@@ -322,11 +322,12 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         return {"incidents": incidents}
 
     async def _parse_qld_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
-        """Parse QLD QFES JSON format."""
-        data = await resp.json()
+        """Parse QLD QFES JSON format (QFDWarnings GeoJSON)."""
+        # content_type=None skips validation - QLD S3 returns binary/octet-stream
+        data = await resp.json(content_type=None)
         incidents = []
 
-        # QLD format varies - handle both array and object with features
+        # QLD format is GeoJSON FeatureCollection
         if isinstance(data, dict):
             features = data.get("features", data.get("alerts", []))
         elif isinstance(data, list):
@@ -343,6 +344,15 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             if coords:
                 if geom.get("type") == "Point":
                     lon, lat = coords[0], coords[1] if len(coords) >= 2 else (None, None)
+                elif geom.get("type") == "Polygon" and coords:
+                    # For polygons, try to get centroid from first ring
+                    try:
+                        ring = coords[0]
+                        if ring:
+                            lon = sum(p[0] for p in ring) / len(ring)
+                            lat = sum(p[1] for p in ring) / len(ring)
+                    except (ValueError, TypeError, IndexError):
+                        pass
                 elif isinstance(coords, list) and len(coords) >= 2:
                     # Might be raw coordinates
                     try:
@@ -350,30 +360,49 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                     except (ValueError, TypeError, IndexError):
                         pass
 
-            # Also check for lat/lon directly in props
+            # QLD feed has Latitude/Longitude directly in properties
             if lat is None:
-                lat = props.get("latitude") or props.get("lat")
+                lat = props.get("Latitude") or props.get("latitude") or props.get("lat")
             if lon is None:
-                lon = props.get("longitude") or props.get("lon")
+                lon = props.get("Longitude") or props.get("longitude") or props.get("lon")
 
-            sev = _norm_severity(props.get("level"), props.get("status"))
+            # QLD uses WarningLevel and CurrentStatus
+            warning_level = props.get("WarningLevel") or props.get("level")
+            current_status = props.get("CurrentStatus") or props.get("status")
+            sev = _norm_severity(warning_level, current_status)
 
-            updated = props.get("updated") or props.get("created") or props.get("date")
+            # QLD uses ISO datetime fields
+            updated = (
+                props.get("ItemDateTimeLocal_ISO")
+                or props.get("PublishDateLocal_ISO")
+                or props.get("updated")
+                or props.get("created")
+                or props.get("date")
+            )
             incident_dt = _parse_incident_datetime(updated, None)
 
+            # Build location name from available fields
+            location_name = (
+                props.get("WarningTitle")
+                or props.get("WarningArea")
+                or props.get("Location")
+                or props.get("location")
+                or props.get("name")
+            )
+
             incidents.append({
-                ATTR_INCIDENT_NO: props.get("id") or props.get("event_id"),
-                ATTR_TYPE: props.get("type") or props.get("event_type"),
-                ATTR_STATUS: props.get("status"),
-                ATTR_LEVEL: props.get("level"),
+                ATTR_INCIDENT_NO: props.get("UniqueID") or props.get("OBJECTID") or props.get("id") or props.get("event_id"),
+                ATTR_TYPE: props.get("EventType") or props.get("GroupedType") or props.get("type") or props.get("event_type"),
+                ATTR_STATUS: current_status,
+                ATTR_LEVEL: warning_level,
                 ATTR_SEVERITY: sev,
-                ATTR_LOCATION_NAME: props.get("location") or props.get("name"),
-                ATTR_REGION: props.get("lga") or props.get("region"),
+                ATTR_LOCATION_NAME: location_name,
+                ATTR_REGION: props.get("Jurisdiction") or props.get("Locality") or props.get("lga") or props.get("region"),
                 ATTR_DATE: updated,
                 ATTR_TIME: None,
                 ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
                 ATTR_MESSAGE_LINK: props.get("url") or props.get("link"),
-                ATTR_AGENCY: "QLD QFES",
+                ATTR_AGENCY: "QLD QFD",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
             })

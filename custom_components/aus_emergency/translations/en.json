@@ -6,15 +6,19 @@
         "title": "Australian Emergency Services",
         "description": "Configure emergency incident tracking for your state.",
         "data": {
+          "states": "States",
           "state": "State",
           "update_interval": "Update interval (seconds)",
           "remove_stale": "Remove stale incidents from HA",
+          "expose_to_assistants": "Expose to assistants",
           "zones": "Monitor zones (optional)"
         },
         "data_description": {
+          "states": "Select which Australian states to monitor for emergency incidents",
           "state": "Select which Australian state to monitor for emergency incidents",
           "update_interval": "How often to poll for new incidents (default: 600 seconds)",
           "remove_stale": "Remove incident entities when they are no longer active, instead of marking them unavailable",
+          "expose_to_assistants": "Automatically expose new incident entities to Assist and Google Assistant",
           "zones": "Select Home Assistant zones to filter incidents. Incidents will show which zones they fall within."
         }
       }
@@ -25,16 +29,36 @@
       "init": {
         "title": "Options",
         "data": {
+          "states": "States",
           "state": "State",
           "update_interval": "Update interval (seconds)",
           "remove_stale": "Remove stale incidents from HA",
+          "expose_to_assistants": "Expose to assistants",
           "zones": "Monitor zones"
         },
         "data_description": {
+          "states": "Select which Australian states to monitor. Removing a state will also remove its device and entities.",
           "state": "Select which Australian state to monitor",
           "update_interval": "How often to poll for new incidents",
           "remove_stale": "Remove incident entities when no longer active",
+          "expose_to_assistants": "Automatically expose new incident entities to Assist and Google Assistant",
           "zones": "Incidents will show which of these zones they fall within"
+        }
+      }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh",
+      "description": "Forces an immediate refresh of all incident data from the source."
+    },
+    "remove_state": {
+      "name": "Remove State",
+      "description": "Removes the device and all entities for a specific state. Use this to clean up orphaned devices.",
+      "fields": {
+        "state": {
+          "name": "State",
+          "description": "The state code to remove (SA, NSW, VIC, or QLD)."
         }
       }
     }

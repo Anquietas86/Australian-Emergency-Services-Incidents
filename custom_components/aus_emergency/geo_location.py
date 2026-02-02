@@ -17,10 +17,14 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN,
     CONF_REMOVE_STALE,
+    CONF_EXPOSE_TO_ASSISTANTS,
     CONF_ZONES,
     CONF_STATE,
+    CONF_STATES,
     DEFAULT_REMOVE_STALE,
+    DEFAULT_EXPOSE_TO_ASSISTANTS,
     DEFAULT_STATE,
+    DEFAULT_STATES,
     ATTR_INCIDENT_NO,
     ATTR_TYPE,
     ATTR_STATUS,
@@ -151,19 +155,55 @@ async def async_setup_entry(
     remove_stale = entry.options.get(
         CONF_REMOVE_STALE, entry.data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE)
     )
+    expose_to_assistants = entry.options.get(
+        CONF_EXPOSE_TO_ASSISTANTS, entry.data.get(CONF_EXPOSE_TO_ASSISTANTS, DEFAULT_EXPOSE_TO_ASSISTANTS)
+    )
     monitored_zones = entry.options.get(
         CONF_ZONES, entry.data.get(CONF_ZONES, [])
     )
-    state = entry.options.get(
-        CONF_STATE, entry.data.get(CONF_STATE, DEFAULT_STATE)
-    )
-    device_info = STATE_DEVICE_INFO.get(state, DEVICE_INFO_SA_CFS)
 
-    coordinators = hass.data[DOMAIN][entry.entry_id]
-    incident_coordinator: IncidentDataCoordinator = coordinators["incident_coordinator"]
-    cap_coordinator: CFSCAPDataCoordinator = coordinators["cap_coordinator"]
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    incident_coordinators = entry_data.get("incident_coordinators", {})
+    cap_coordinators = entry_data.get("cap_coordinators", {})
 
-    # Incident entities
+    # Get configured states (support both new multi-state and legacy single-state)
+    states = entry_data.get("states", [])
+    if not states:
+        old_state = entry.options.get(CONF_STATE) or entry.data.get(CONF_STATE, DEFAULT_STATE)
+        states = [old_state] if old_state else DEFAULT_STATES
+
+    # Set up incident and CAP entities for each state
+    for state in states:
+        incident_coordinator = incident_coordinators.get(state)
+        cap_coordinator = cap_coordinators.get(state)
+        device_info = STATE_DEVICE_INFO.get(state, DEVICE_INFO_SA_CFS)
+
+        if incident_coordinator:
+            _setup_incident_entities(
+                hass, entry, async_add_entities,
+                incident_coordinator, device_info, monitored_zones, remove_stale, expose_to_assistants, state
+            )
+
+        if cap_coordinator:
+            _setup_cap_entities(
+                hass, entry, async_add_entities,
+                cap_coordinator, device_info, monitored_zones, expose_to_assistants, state
+            )
+
+
+def _setup_incident_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    incident_coordinator: IncidentDataCoordinator,
+    device_info: dict,
+    monitored_zones: list[str],
+    remove_stale: bool,
+    expose_to_assistants: bool,
+    state: str,
+):
+    """Set up incident geo_location entities for a single state."""
+    # Use state prefix in entity tracking to avoid collisions
     incident_entities: dict[str, IncidentEntity] = {}
 
     def _sync_incident_entities():
@@ -181,20 +221,23 @@ async def async_setup_entry(
                     ).encode("utf-8")
                 ).hexdigest()
 
-            seen_ids.add(inc_no)
+            # Prefix with state to ensure uniqueness across states
+            full_id = f"{state}_{inc_no}"
+            seen_ids.add(full_id)
 
-            ent = incident_entities.get(inc_no)
+            ent = incident_entities.get(full_id)
             if ent is None:
                 ent = IncidentEntity(
-                    hass, item, unique_id=inc_no,
+                    hass, item, unique_id=full_id,
                     source=incident_coordinator.source,
                     device_info=device_info,
                     monitored_zones=monitored_zones,
                 )
-                incident_entities[inc_no] = ent
+                incident_entities[full_id] = ent
                 async_add_entities([ent], update_before_add=True)
                 ent.fire_change_event(EVENT_CREATED)
-                _expose_entity_to_voice_assistants(hass, ent.entity_id)
+                if expose_to_assistants:
+                    _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
                 if ent.update_from_item(item, monitored_zones):
                     ent.fire_change_event(EVENT_UPDATED)
@@ -222,9 +265,20 @@ async def async_setup_entry(
     incident_coordinator.async_add_listener(_sync_incident_entities)
     _sync_incident_entities()
 
-    # CAP alert entities
+
+def _setup_cap_entities(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    cap_coordinator: CFSCAPDataCoordinator,
+    device_info: dict,
+    monitored_zones: list[str],
+    expose_to_assistants: bool,
+    state: str,
+):
+    """Set up CAP alert geo_location entities for a single state."""
     cap_entities: dict[str, CAPAlertGeolocation] = {}
-    cap_hashes: dict[str, str] = {}  # Track CAP alert hashes for change detection
+    cap_hashes: dict[str, str] = {}
 
     def _sync_cap_entities():
         data = cap_coordinator.data or {}
@@ -236,30 +290,32 @@ async def async_setup_entry(
             if not alert_id:
                 continue
 
-            seen_ids.add(alert_id)
+            # Prefix with state to ensure uniqueness
+            full_id = f"{state}_{alert_id}"
+            seen_ids.add(full_id)
 
-            # Calculate hash for change detection
             alert_hash = hashlib.sha1(
                 str(alert).encode("utf-8")
             ).hexdigest()
 
-            ent = cap_entities.get(alert_id)
+            ent = cap_entities.get(full_id)
             if ent is None:
                 ent = CAPAlertGeolocation(
                     hass, cap_coordinator, entry, alert_id,
                     device_info=device_info,
                     monitored_zones=monitored_zones,
+                    state_code=state,
                 )
-                cap_entities[alert_id] = ent
-                cap_hashes[alert_id] = alert_hash
+                cap_entities[full_id] = ent
+                cap_hashes[full_id] = alert_hash
                 async_add_entities([ent], update_before_add=True)
                 ent.fire_change_event(EVENT_CAP_CREATED)
-                _expose_entity_to_voice_assistants(hass, ent.entity_id)
+                if expose_to_assistants:
+                    _expose_entity_to_voice_assistants(hass, ent.entity_id)
             else:
-                # Check if alert changed
-                old_hash = cap_hashes.get(alert_id)
+                old_hash = cap_hashes.get(full_id)
                 if old_hash != alert_hash:
-                    cap_hashes[alert_id] = alert_hash
+                    cap_hashes[full_id] = alert_hash
                     ent.async_write_ha_state()
                     ent.fire_change_event(EVENT_CAP_UPDATED)
 
@@ -291,15 +347,17 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         alert_id: str,
         device_info: dict | None = None,
         monitored_zones: list[str] | None = None,
+        state_code: str = "",
     ) -> None:
         super().__init__(coordinator)
         self.hass = hass
         self._entry = entry
         self._alert_id = alert_id
+        self._state_code = state_code
         self._monitored_zones = monitored_zones or []
         self._first_seen = dt_now()
         # Use a truncated hash for the unique ID to keep it manageable
-        self._alert_hash = hashlib.sha1(alert_id.encode("utf-8")).hexdigest()[:12]
+        self._alert_hash = hashlib.sha1(f"{state_code}_{alert_id}".encode("utf-8")).hexdigest()[:12]
         self._attr_unique_id = f"aus_emergency_cap_{self._alert_hash}"
         self.entity_id = f"geo_location.aus_emergency_cap_{self._alert_hash}"
         self._attr_object_id = f"aus_emergency_cap_{self._alert_hash}"

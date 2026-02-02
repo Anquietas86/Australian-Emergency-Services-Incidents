@@ -1,3 +1,18 @@
 refresh:
   description: Forces an immediate refresh of all incident data from the source.
   fields: {}
+
+remove_state:
+  description: Removes the device and all entities for a specific state. Use this to clean up orphaned devices after removing a state from the configuration.
+  fields:
+    state:
+      description: The state code to remove (SA, NSW, VIC, or QLD).
+      required: true
+      example: "NSW"
+      selector:
+        select:
+          options:
+            - "SA"
+            - "NSW"
+            - "VIC"
+            - "QLD"

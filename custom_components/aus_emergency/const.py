@@ -1,13 +1,17 @@
 DOMAIN = "aus_emergency"
 
-CONF_STATE = "state"
+CONF_STATE = "state"  # Legacy single state
+CONF_STATES = "states"  # New multi-state support
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_REMOVE_STALE = "remove_stale"
+CONF_EXPOSE_TO_ASSISTANTS = "expose_to_assistants"
 CONF_ZONES = "zones"
 
 DEFAULT_STATE = "SA"
+DEFAULT_STATES = ["SA"]
 DEFAULT_UPDATE_INTERVAL = 600  # seconds
 DEFAULT_REMOVE_STALE = False
+DEFAULT_EXPOSE_TO_ASSISTANTS = True
 
 # Supported states
 SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD"]
@@ -36,7 +40,7 @@ FEED_URLS = {
         "source": SOURCE_VIC_EMV,
     },
     "QLD": {
-        "json": "https://www.qfes.qld.gov.au/data/alerts/bushfireAlert.json",
+        "json": "https://publiccontent-gis-psba-qld-gov-au.s3.amazonaws.com/content/Feeds/BushfireCurrentIncidents/bushfireAlert.json",
         "cap": None,
         "source": SOURCE_QLD_QFES,
     },
@@ -76,6 +80,7 @@ EVENT_CAP_UPDATED = "aus_emergency_cap_alert_updated"
 EVENT_CAP_REMOVED = "aus_emergency_cap_alert_removed"
 
 SERVICE_REFRESH = "refresh"
+SERVICE_REMOVE_STATE = "remove_state"
 
 # Retry/backoff settings
 DEFAULT_RETRY_DELAY = 30  # seconds
@@ -105,9 +110,9 @@ DEVICE_INFO_VIC_EMV = {
 
 DEVICE_INFO_QLD_QFES = {
     "identifiers": {("aus_emergency", "qld_qfes")},
-    "name": "QLD QFES",
+    "name": "QLD Fire Department",
     "manufacturer": "QLD Government",
-    "model": "QFES Feed",
+    "model": "QFD Feed",
 }
 
 STATE_DEVICE_INFO = {
