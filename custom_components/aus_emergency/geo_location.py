@@ -232,6 +232,7 @@ def _setup_incident_entities(
                     source=incident_coordinator.source,
                     device_info=device_info,
                     monitored_zones=monitored_zones,
+                    state_code=state,
                 )
                 incident_entities[full_id] = ent
                 async_add_entities([ent], update_before_add=True)
@@ -241,6 +242,7 @@ def _setup_incident_entities(
             else:
                 if ent.update_from_item(item, monitored_zones):
                     ent.fire_change_event(EVENT_UPDATED)
+                ent.async_write_ha_state()
 
         stale_ids = [eid for eid in list(incident_entities.keys()) if eid not in seen_ids]
         if stale_ids:
@@ -358,9 +360,10 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         self._first_seen = dt_now()
         # Use a truncated hash for the unique ID to keep it manageable
         self._alert_hash = hashlib.sha1(f"{state_code}_{alert_id}".encode("utf-8")).hexdigest()[:12]
-        self._attr_unique_id = f"aus_emergency_cap_{self._alert_hash}"
-        self.entity_id = f"geo_location.aus_emergency_cap_{self._alert_hash}"
-        self._attr_object_id = f"aus_emergency_cap_{self._alert_hash}"
+        # Entity ID format: geo_location.aus_emergency_{state}_cap_{hash}
+        self._attr_object_id = f"aus_emergency_{state_code}_cap_{self._alert_hash}".lower()
+        self._attr_unique_id = self._attr_object_id
+        self.entity_id = f"geo_location.{self._attr_object_id}"
         self._attr_has_entity_name = False
         self._attr_device_info = device_info
 
@@ -471,6 +474,30 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     def available(self) -> bool:
         return super().available and self._alert_data is not None
 
+    @property
+    def distance(self) -> float | None:
+        """Return distance from home to this alert in km."""
+        if self.latitude is None or self.longitude is None:
+            return None
+
+        home_lat = self.hass.config.latitude
+        home_lon = self.hass.config.longitude
+        if home_lat is None or home_lon is None:
+            return None
+
+        from math import radians, sin, cos, sqrt, atan2
+        R = 6371  # Earth's radius in km
+
+        lat1, lon1 = radians(home_lat), radians(home_lon)
+        lat2, lon2 = radians(self.latitude), radians(self.longitude)
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return round(R * c, 1)
+
 
 class IncidentEntity(GeolocationEvent):
     def __init__(
@@ -481,6 +508,7 @@ class IncidentEntity(GeolocationEvent):
         source: str = "unknown",
         device_info: dict | None = None,
         monitored_zones: list[str] | None = None,
+        state_code: str = "",
     ) -> None:
         self.hass = hass
         self._source = source
@@ -494,10 +522,15 @@ class IncidentEntity(GeolocationEvent):
         self._last_changed = self._first_seen
         self._monitored_zones = monitored_zones or []
         self._device_info = device_info
+        self._state_code = state_code
 
         self._incident_no = unique_id
-        self._attr_unique_id = f"aus_emergency_{self._incident_no}".lower()
-        self._attr_object_id = f"aus_emergency_{self._incident_no}".lower()
+        # Get the raw incident number (without state prefix)
+        raw_incident_no = item.get(ATTR_INCIDENT_NO) or unique_id.split("_", 1)[-1]
+        # Entity ID format: geo_location.aus_emergency_{state}_{incident_no}
+        self._attr_object_id = f"aus_emergency_{state_code}_{raw_incident_no}".lower()
+        self._attr_unique_id = self._attr_object_id
+        self.entity_id = f"geo_location.{self._attr_object_id}"
         self._attr_has_entity_name = False
 
         self._state: str | None = None
@@ -615,16 +648,36 @@ class IncidentEntity(GeolocationEvent):
         return self._longitude
 
     @property
-    def state(self) -> str | None:
-        return self._state
-
-    @property
     def extra_state_attributes(self) -> dict:
         return self._attrs
 
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def distance(self) -> float | None:
+        """Return distance from home to this incident in km."""
+        if self._latitude is None or self._longitude is None:
+            return None
+
+        home_lat = self.hass.config.latitude
+        home_lon = self.hass.config.longitude
+        if home_lat is None or home_lon is None:
+            return None
+
+        from math import radians, sin, cos, sqrt, atan2
+        R = 6371  # Earth's radius in km
+
+        lat1, lon1 = radians(home_lat), radians(home_lon)
+        lat2, lon2 = radians(self._latitude), radians(self._longitude)
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return round(R * c, 1)
 
     def mark_stale(self) -> None:
         self._available = False

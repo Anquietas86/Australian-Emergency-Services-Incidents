@@ -26,6 +26,7 @@ from .const import (
     ATTR_LOCATION_NAME,
     ATTR_INCIDENT_NO,
     HIGH_SEVERITY_LEVELS,
+    MAX_INCIDENTS_IN_ATTRIBUTES,
 )
 from .coordinator import IncidentDataCoordinator
 
@@ -79,6 +80,9 @@ class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
         self._attr_name = f"{state} Active incidents" if state else "Active incidents"
         self._attr_unique_id = f"{entry.entry_id}_{state}_active_incidents"
         self._attr_device_info = device_info
+        # Use standardized entity_id pattern
+        if state:
+            self.entity_id = f"sensor.{state.lower()}_active_incidents"
 
     @property
     def native_value(self) -> int:
@@ -104,11 +108,17 @@ class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
             sev = p.get(ATTR_SEVERITY, "info")
             counts[sev] = counts.get(sev, 0) + 1
 
+        # Truncate incidents to avoid exceeding 16KB attribute limit
+        truncated = len(incidents) > MAX_INCIDENTS_IN_ATTRIBUTES
+        incidents_to_store = incidents[:MAX_INCIDENTS_IN_ATTRIBUTES] if truncated else incidents
+
         return {
             "source": self.coordinator.source,
             "summary_generated": dt_now().isoformat(),
             "counts": counts,
-            "incidents": incidents,
+            "incidents": incidents_to_store,
+            "incidents_truncated": truncated,
+            "incidents_omitted": max(0, len(incidents) - MAX_INCIDENTS_IN_ATTRIBUTES),
         }
 
 
@@ -132,6 +142,9 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
         self._attr_name = f"{state} High severity incidents" if state else "High severity incidents"
         self._attr_unique_id = f"{entry.entry_id}_{state}_high_severity_incidents"
         self._attr_device_info = device_info
+        # Use standardized entity_id pattern
+        if state:
+            self.entity_id = f"sensor.{state.lower()}_high_severity_incidents"
 
     @property
     def incidents(self) -> List[Dict[str, Any]]:
@@ -158,11 +171,17 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
             if sev in counts:
                 counts[sev] += 1
 
+        # Truncate incidents to avoid exceeding 16KB attribute limit
+        truncated = len(incidents) > MAX_INCIDENTS_IN_ATTRIBUTES
+        incidents_to_store = incidents[:MAX_INCIDENTS_IN_ATTRIBUTES] if truncated else incidents
+
         return {
             "source": self.coordinator.source,
             "summary_generated": dt_now().isoformat(),
             "counts": counts,
-            "incidents": incidents,
+            "incidents": incidents_to_store,
+            "incidents_truncated": truncated,
+            "incidents_omitted": max(0, len(incidents) - MAX_INCIDENTS_IN_ATTRIBUTES),
             "severity_levels": HIGH_SEVERITY_LEVELS,
         }
 
@@ -185,6 +204,9 @@ class IncidentSummarySensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
         self._attr_name = f"{state} Incident summary" if state else "Incident summary"
         self._attr_unique_id = f"{entry.entry_id}_{state}_incident_summary"
         self._attr_device_info = device_info
+        # Use standardized entity_id pattern
+        if state:
+            self.entity_id = f"sensor.{state.lower()}_incident_summary"
 
     @property
     def incidents(self) -> List[Dict[str, Any]]:

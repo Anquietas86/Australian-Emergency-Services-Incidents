@@ -58,7 +58,7 @@
       "fields": {
         "state": {
           "name": "State",
-          "description": "The state code to remove (SA, NSW, VIC, or QLD)."
+          "description": "The state code to remove (SA, NSW, VIC, QLD, TAS, or WA)."
         }
       }
     }
