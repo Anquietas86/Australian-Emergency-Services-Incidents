@@ -154,3 +154,6 @@ STATE_DEVICE_INFO = {
     "TAS": DEVICE_INFO_TAS_TFS,
     "WA": DEVICE_INFO_WA_DFES,
 }
+
+# Re-export shared utilities
+from .utils import haversine_distance as _haversine_distance  # noqa: E402

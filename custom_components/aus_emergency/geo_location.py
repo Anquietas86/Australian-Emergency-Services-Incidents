@@ -11,10 +11,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util.dt import now as dt_now, parse_datetime
+from homeassistant.util.dt import now as dt_now
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    _haversine_distance,
     DOMAIN,
     CONF_REMOVE_STALE,
     CONF_EXPOSE_TO_ASSISTANTS,
@@ -117,20 +118,7 @@ def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zo
     if zone_radius <= 0:
         return False
 
-    # Haversine formula for distance
-    from math import radians, sin, cos, sqrt, atan2
-    R = 6371000  # Earth's radius in meters
-
-    lat1, lon1 = radians(lat), radians(lon)
-    lat2, lon2 = radians(zone_lat), radians(zone_lon)
-
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    distance = R * c
-
+    distance = _haversine_distance(lat, lon, zone_lat, zone_lon)
     return distance <= zone_radius
 
 
@@ -485,18 +473,9 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         if home_lat is None or home_lon is None:
             return None
 
-        from math import radians, sin, cos, sqrt, atan2
-        R = 6371  # Earth's radius in km
-
-        lat1, lon1 = radians(home_lat), radians(home_lon)
-        lat2, lon2 = radians(self.latitude), radians(self.longitude)
-
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-
-        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-        c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return round(R * c, 1)
+        return round(_haversine_distance(
+            home_lat, home_lon, self.latitude, self.longitude, radius=6371.0
+        ), 1)
 
 
 class IncidentEntity(GeolocationEvent):

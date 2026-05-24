@@ -21,6 +21,7 @@ from .const import (
     DEFAULT_STATES,
     STATE_DEVICE_INFO,
     SUPPORTED_STATES,
+    FEED_URLS,
 )
 from .coordinator import IncidentDataCoordinator
 from .cap_coordinator import CFSCAPDataCoordinator
@@ -94,7 +95,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     for state in states:
         incident_coordinators[state] = IncidentDataCoordinator(hass, state, update_seconds)
-        cap_coordinators[state] = CFSCAPDataCoordinator(hass, state, update_seconds)
+
+        # Only create CAP coordinator if this state has a CAP feed URL
+        cap_url = FEED_URLS.get(state, {}).get("cap")
+        if cap_url:
+            cap_coordinators[state] = CFSCAPDataCoordinator(hass, state, update_seconds)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "incident_coordinators": incident_coordinators,
@@ -108,7 +113,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Initial refresh for all coordinators
     for state in states:
         await incident_coordinators[state].async_config_entry_first_refresh()
-        await cap_coordinators[state].async_config_entry_first_refresh()
+        cap_coord = cap_coordinators.get(state)
+        if cap_coord:
+            await cap_coord.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

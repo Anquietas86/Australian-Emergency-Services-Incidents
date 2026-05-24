@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.2.0
+**Version:** v0.3.0
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -9,12 +9,14 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 
 ### Supported Regions
 - **South Australia (SA)**: CFS/SES via CRIIMSON feed + CAP alerts
-- **New South Wales (NSW)**: RFS major incidents
-- **Victoria (VIC)**: Emergency Management Victoria incidents
-- **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts
+- **New South Wales (NSW)**: RFS major incidents (GeoJSON)
+- **Victoria (VIC)**: Emergency Management Victoria incidents (JSON)
+- **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts (GeoJSON)
+- **Tasmania (TAS)**: Tasmania Fire Service (GeoRSS XML)
+- **Western Australia (WA)**: DFES EmergencyWA API (JSON + warnings feed)
 
 ### Key Features
-- **Multi-state support**: Monitor incidents across SA, NSW, VIC, and QLD
+- **Multi-state support**: Monitor incidents across all six Australian states
 - **Lifecycle events** (`incident_created|updated|removed`) for automation triggers
 - **CAP alert events** (SA) for emergency warnings
 - **Incident tracking**: `first_seen`, `last_seen`, `last_changed` timestamps with duration tracking
@@ -26,22 +28,26 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Zone monitoring**: Optionally track incidents within selected Home Assistant zones
 - **Exponential backoff retry**: Resilient data source polling with automatic backoff on failures
 - **Manual refresh service**: `aus_emergency.refresh` to force immediate data updates
+- **State removal service**: `aus_emergency.remove_state` to clean up devices when a state is deselected
 - **Configurable update intervals** (default: 10 minutes)
 
 ## Installation
 1. Clone/download `custom_components/aus_emergency/` to your Home Assistant `config/` directory.
 2. Restart Home Assistant.
 3. Navigate to **Settings → Devices & Services → Create Integration** → search for *Australian Emergency Services Incidents*.
-4. Select your state (SA, NSW, VIC, or QLD) and configure your preferences.
+4. Select your states (SA, NSW, VIC, QLD, TAS, WA) and configure your preferences.
 
 ### Configuration Options
-- **State**: Select the emergency service region:
+- **States**: Select one or more emergency service regions:
   - **SA** (South Australia) — CFS/SES via CRIIMSON + CAP alerts
   - **NSW** (New South Wales) — RFS major incidents
   - **VIC** (Victoria) — Emergency Management Victoria
   - **QLD** (Queensland) — Queensland Fire and Emergency Services
+  - **TAS** (Tasmania) — Tasmania Fire Service (GeoRSS)
+  - **WA** (Western Australia) — DFES EmergencyWA API
 - **Update Interval**: How frequently to poll for new incidents (default: 10 minutes)
 - **Remove Stale Incidents**: Automatically remove incidents no longer in the active feed
+- **Expose to Assistants**: Control whether entities are exposed to voice assistants
 - **Zone Monitoring**: Optional — select Home Assistant zones to monitor incidents within them
 
 ## Entities Created
@@ -55,12 +61,12 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
   - Zone membership (if within monitored zones)
 
 ### Sensor Entities
-- **Active Incidents** (`sensor.active_incidents`): 
+- **Active Incidents** (`sensor.*_active_incidents`): 
   - Total count of active incidents
   - Count breakdown by severity level
   - List of all incident summaries in attributes
   
-- **Incident Summary** (`sensor.incident_summary`):
+- **Incident Summary** (`sensor.*_incident_summary`):
   - Detailed list of all incidents with current status
   - Rich attributes: incident number, type, severity, location, duration
   - Useful for dashboards and detailed automation logic
@@ -72,7 +78,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 
 ## Events for Automations
 
-Create powerful automations by listening to incident lifecycle events. Each state (SA, NSW, VIC, QLD) fires the same core events plus state-specific CAP alerts (SA only).
+Create powerful automations by listening to incident lifecycle events. Each state fires the same core events plus state-specific CAP alerts (SA only).
 
 ### Incident Lifecycle Events
 - `aus_emergency_incident_created` — New incident detected
@@ -125,14 +131,23 @@ automation:
           message: "{{ trigger.event.data.summary }}"
 ```
 
-## Service
+## Services
 
 ### `aus_emergency.refresh`
-Forces an immediate refresh of all incident data from both CRIIMSON and CAP feeds without waiting for the next scheduled update.
+Forces an immediate refresh of all incident data from all configured feeds without waiting for the next scheduled update.
 
 **Usage in automation:**
 ```yaml
 service: aus_emergency.refresh
+```
+
+### `aus_emergency.remove_state`
+Manually removes all devices and entities for a specified state. Useful for cleaning up when a state is no longer needed.
+
+```yaml
+service: aus_emergency.remove_state
+data:
+  state: "VIC"
 ```
 
 ## Requirements
@@ -150,13 +165,8 @@ service: aus_emergency.refresh
 
 ## Current Status
 
-✅ **Stable** — Production-ready for South Australia
-- Full CFS/SES incident monitoring via CRIIMSON feed
-- CAP alert integration for comprehensive coverage
+✅ **Stable** — Production-ready for all six Australian states
+- Full incident monitoring for SA, NSW, VIC, QLD, TAS, and WA
+- CAP alert integration for SA
 - Robust error handling and resource management
 - Comprehensive event system for automations
-
-## Future Plans
-
-- Expand support to additional Australian states
-- Additional data sources as available

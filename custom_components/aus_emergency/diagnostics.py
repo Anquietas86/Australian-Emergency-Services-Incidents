@@ -9,10 +9,10 @@ from homeassistant.util.dt import now as dt_now
 
 from .const import (
     DOMAIN,
-    CONF_STATE,
     CONF_UPDATE_INTERVAL,
     CONF_REMOVE_STALE,
     CONF_ZONES,
+    CONF_STATES,
     ATTR_SEVERITY,
     HIGH_SEVERITY_LEVELS,
 )
@@ -22,17 +22,60 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinators = hass.data[DOMAIN].get(entry.entry_id, {})
-    incident_coordinator = coordinators.get("incident_coordinator")
-    cap_coordinator = coordinators.get("cap_coordinator")
+    entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+    incident_coordinators = entry_data.get("incident_coordinators", {})
+    cap_coordinators = entry_data.get("cap_coordinators", {})
 
-    # Get incident data
-    incident_data = incident_coordinator.data if incident_coordinator else {}
-    incidents = incident_data.get("incidents", [])
+    # Aggregate data across all states
+    all_incidents = []
+    all_cap_alerts = []
+    coordinator_statuses = []
+    cap_statuses = []
 
-    # Get CAP data
-    cap_data = cap_coordinator.data if cap_coordinator else {}
-    cap_alerts = cap_data.get("alerts", [])
+    for state, coordinator in incident_coordinators.items():
+        data = coordinator.data or {}
+        incidents = data.get("incidents", [])
+        all_incidents.extend(incidents)
+        coordinator_statuses.append({
+            "state": state,
+            "name": coordinator.name,
+            "last_update_success": coordinator.last_update_success,
+            "last_update_success_time": (
+                coordinator.last_update_success_time.isoformat()
+                if coordinator.last_update_success_time
+                else None
+            ),
+            "update_interval_seconds": (
+                coordinator.update_interval.total_seconds()
+                if coordinator.update_interval
+                else None
+            ),
+            "consecutive_failures": coordinator._consecutive_failures,
+            "incident_count": len(incidents),
+        })
+
+    for state, coordinator in cap_coordinators.items():
+        data = coordinator.data or {}
+        alerts = data.get("alerts", [])
+        all_cap_alerts.extend(alerts)
+        cap_statuses.append({
+            "state": state,
+            "name": coordinator.name,
+            "last_update_success": coordinator.last_update_success,
+            "last_update_success_time": (
+                coordinator.last_update_success_time.isoformat()
+                if coordinator.last_update_success_time
+                else None
+            ),
+            "update_interval_seconds": (
+                coordinator.update_interval.total_seconds()
+                if coordinator.update_interval
+                else None
+            ),
+            "consecutive_failures": coordinator._consecutive_failures,
+            "has_cap_feed": coordinator.cap_url is not None,
+            "alert_count": len(alerts),
+        })
 
     # Calculate severity breakdown
     severity_counts = {
@@ -42,67 +85,18 @@ async def async_get_config_entry_diagnostics(
         "emergency_warning": 0,
         "all_clear": 0,
     }
-    for inc in incidents:
+    for inc in all_incidents:
         sev = inc.get(ATTR_SEVERITY, "info")
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
     high_severity_count = sum(
-        1 for inc in incidents
+        1 for inc in all_incidents
         if inc.get(ATTR_SEVERITY) in HIGH_SEVERITY_LEVELS
     )
 
-    # Coordinator status
-    incident_coordinator_status = {
-        "name": incident_coordinator.name if incident_coordinator else "N/A",
-        "last_update_success": (
-            incident_coordinator.last_update_success
-            if incident_coordinator else None
-        ),
-        "last_update_success_time": (
-            incident_coordinator.last_update_success_time.isoformat()
-            if incident_coordinator and incident_coordinator.last_update_success_time
-            else None
-        ),
-        "update_interval_seconds": (
-            incident_coordinator.update_interval.total_seconds()
-            if incident_coordinator and incident_coordinator.update_interval
-            else None
-        ),
-        "consecutive_failures": (
-            incident_coordinator._consecutive_failures
-            if incident_coordinator else 0
-        ),
-    }
-
-    cap_coordinator_status = {
-        "name": cap_coordinator.name if cap_coordinator else "N/A",
-        "last_update_success": (
-            cap_coordinator.last_update_success
-            if cap_coordinator else None
-        ),
-        "last_update_success_time": (
-            cap_coordinator.last_update_success_time.isoformat()
-            if cap_coordinator and cap_coordinator.last_update_success_time
-            else None
-        ),
-        "update_interval_seconds": (
-            cap_coordinator.update_interval.total_seconds()
-            if cap_coordinator and cap_coordinator.update_interval
-            else None
-        ),
-        "consecutive_failures": (
-            cap_coordinator._consecutive_failures
-            if cap_coordinator else 0
-        ),
-        "has_cap_feed": (
-            cap_coordinator.cap_url is not None
-            if cap_coordinator else False
-        ),
-    }
-
     # Configuration
     config = {
-        "state": entry.options.get(CONF_STATE, entry.data.get(CONF_STATE)),
+        "states": entry.options.get(CONF_STATES, entry.data.get(CONF_STATES)),
         "update_interval": entry.options.get(
             CONF_UPDATE_INTERVAL, entry.data.get(CONF_UPDATE_INTERVAL)
         ),
@@ -117,12 +111,12 @@ async def async_get_config_entry_diagnostics(
     return {
         "generated_at": dt_now().isoformat(),
         "config": config,
-        "incident_coordinator": incident_coordinator_status,
-        "cap_coordinator": cap_coordinator_status,
+        "incident_coordinators": coordinator_statuses,
+        "cap_coordinators": cap_statuses,
         "summary": {
-            "total_incidents": len(incidents),
+            "total_incidents": len(all_incidents),
             "high_severity_incidents": high_severity_count,
-            "total_cap_alerts": len(cap_alerts),
+            "total_cap_alerts": len(all_cap_alerts),
             "severity_breakdown": severity_counts,
         },
         "incidents": [
@@ -138,7 +132,7 @@ async def async_get_config_entry_diagnostics(
                     inc.get("longitude") is not None
                 ),
             }
-            for inc in incidents
+            for inc in all_incidents
         ],
         "cap_alerts": [
             {
@@ -148,6 +142,6 @@ async def async_get_config_entry_diagnostics(
                 "headline": alert.get("headline"),
                 "area_count": len(alert.get("areas", [])),
             }
-            for alert in cap_alerts
+            for alert in all_cap_alerts
         ],
     }
