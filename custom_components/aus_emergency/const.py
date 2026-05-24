@@ -47,8 +47,8 @@ FEED_URLS = {
         "source": SOURCE_QLD_QFES,
     },
     "TAS": {
-        "json": None,  # TAS uses GeoRSS, not JSON
-        "georss": "http://www.fire.tas.gov.au/Show?pageId=colBushfireSummariesRss",
+        "json": None,
+        "georss": None,  # fire.tas.gov.au RSS/KML feeds retired (410 Gone) — replaced by alert.tas.gov.au which has no machine-readable feed
         "cap": None,
         "source": SOURCE_TAS_TFS,
     },

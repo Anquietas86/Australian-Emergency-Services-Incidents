@@ -12,7 +12,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **New South Wales (NSW)**: RFS major incidents (GeoJSON)
 - **Victoria (VIC)**: Emergency Management Victoria incidents (JSON)
 - **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts (GeoJSON)
-- **Tasmania (TAS)**: Tasmania Fire Service (GeoRSS XML)
+- **Tasmania (TAS)**: Tasmania Fire Service — TFS retired their RSS/KML machine-readable feeds in 2026 (replaced by alert.tas.gov.au which has no data API). Feed URL set to None — TAS returns 0 incidents until a new feed is available.
 - **Western Australia (WA)**: DFES EmergencyWA API (JSON + warnings feed)
 
 ### Key Features
