@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1
+
+- **TAS feed retired**: Set georss URL to None — fire.tas.gov.au RSS/KML feeds permanently retired (410 Gone). All five other state feeds verified 200 OK with live data.
+- **Logo optimization**: Resized root logo.png from 1024×1024 (1.1MB) to 256×256 (39KB) for HACS compatibility. Removed duplicate hacs_logo.png.
+
 ## v0.3.0
 
 - **TAS & WA support**: Tasmania Fire Service (GeoRSS) and WA DFES (EmergencyWA API + warnings) added to all states
