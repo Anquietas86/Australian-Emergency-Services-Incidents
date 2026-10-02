@@ -19,6 +19,7 @@ SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD", "TAS", "WA"]
 # Data source identifiers
 SOURCE_SA_CFS = "sa_cfs"
 SOURCE_SA_CFS_GIS = "sa_cfs_gis"
+SA_MAP_MAX_RECORD_AGE_DAYS = 7  # Freshness check, not a claim that incidents resolve within a week.
 # Public incident layer linked from the official CFS map, used when CRIIMSON is down.
 SA_MAP_INCIDENTS_URL = (
     "https://cfsdata.geohub.sa.gov.au/server/rest/services/IMS_Read/"

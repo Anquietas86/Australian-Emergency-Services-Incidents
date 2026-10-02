@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.3
+
+- Reject historical or undated records from the SA CFS map fallback. If its only records are stale, report the incident sensor as unavailable (unknown), never as a live incident or a reassuring zero.
+- Record the number of omitted stale map records for diagnostic use; add regressions for stale-only, undated, and mixed-age responses.
+
 ## v0.3.2
 
 - Isolate feed failures: failed SA/CAP/TAS sources no longer block healthy states or the integration from loading; unavailable feeds remain unavailable and retry automatically.

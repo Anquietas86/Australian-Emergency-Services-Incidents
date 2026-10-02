@@ -1,6 +1,7 @@
 """Regressions for real provider payload shapes and failure semantics."""
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import pytest
 from conftest import cap, coordinator, const, integration, ConfigEntryNotReady, UpdateFailed
@@ -85,7 +86,8 @@ def test_sa_uses_official_map_fallback_when_json_feed_is_down():
                     "ident": "F2610020106", "event": "Structure Fire", "inc_status": "Going",
                     "warn_level": "Incident", "inc_name": "MUNNO PARA WEST",
                     "location": "PONDEROSA, MUNNO PARA WEST", "authority": "SA CFS",
-                    "lat": -34.665717, "long": 138.670983, "updated": 1790931388000,
+                    "lat": -34.665717, "long": 138.670983,
+                    "updated": int(datetime.now(timezone.utc).timestamp() * 1000),
                 }}]}))
             return Response(200, "<html>SA ESS - File Unavailable</html>", "text/html")
     obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
@@ -96,6 +98,38 @@ def test_sa_uses_official_map_fallback_when_json_feed_is_down():
     assert result["incidents"][0][const.ATTR_INCIDENT_NO] == "F2610020106"
     assert result["incidents"][0][const.ATTR_LATITUDE] == -34.665717
     assert result["incidents"][0][const.ATTR_STATUS] == "Going"
+
+
+@pytest.mark.parametrize("updated", [1787831280000, None])
+def test_sa_map_does_not_report_stale_or_undated_incidents_as_active(updated):
+    class OldMap:
+        closed = False
+        def get(self, url, timeout):
+            return Response(200, json.dumps({"features": [{"attributes": {
+                "ident": "F2608270132", "event": "Burn Off",
+                "inc_status": "Controlled", "updated": updated,
+                "lat": -34.8, "long": 138.7,
+            }}]}))
+    obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
+    obj._session = OldMap()
+    with pytest.raises(UpdateFailed, match="stale|timestamp"):
+        asyncio.run(obj._fetch_sa_map_data())
+
+
+def test_sa_map_excludes_stale_record_when_current_record_exists():
+    current = int(datetime.now(timezone.utc).timestamp() * 1000)
+    class MixedMap:
+        closed = False
+        def get(self, url, timeout):
+            return Response(200, json.dumps({"features": [
+                {"attributes": {"ident": "recent", "updated": current, "inc_status": "Going"}},
+                {"attributes": {"ident": "old", "updated": 1787831280000, "inc_status": "Controlled"}},
+            ]}))
+    obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
+    obj._session = MixedMap()
+    result = asyncio.run(obj._fetch_sa_map_data())
+    assert [item[const.ATTR_INCIDENT_NO] for item in result["incidents"]] == ["recent"]
+    assert result["excluded_stale_count"] == 1
 
 
 def test_sa_rejects_failed_map_fallback_too():

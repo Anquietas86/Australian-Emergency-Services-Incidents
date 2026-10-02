@@ -31,6 +31,7 @@ from .const import (
     ATTR_INCIDENT_DATETIME,
     FEED_URLS,
     SA_MAP_INCIDENTS_URL,
+    SA_MAP_MAX_RECORD_AGE_DAYS,
     SOURCE_SA_CFS_GIS,
     DEFAULT_RETRY_DELAY,
     MAX_RETRY_DELAY,
@@ -217,6 +218,8 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("SA map incident result was truncated")
 
         incidents = []
+        excluded_stale_count = 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SA_MAP_MAX_RECORD_AGE_DAYS)
         for feature in data["features"]:
             attrs = feature.get("attributes") or {}
             geometry = feature.get("geometry") or {}
@@ -224,10 +227,14 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             if not identifier:
                 raise UpdateFailed("SA map incident has no stable identifier")
             updated = attrs.get("updated")
-            updated_iso = (
-                datetime.fromtimestamp(updated / 1000, tz=timezone.utc).isoformat()
-                if isinstance(updated, (int, float)) else updated
-            )
+            if not isinstance(updated, (int, float)):
+                excluded_stale_count += 1
+                continue
+            updated_at = datetime.fromtimestamp(updated / 1000, tz=timezone.utc)
+            if updated_at < cutoff:
+                excluded_stale_count += 1
+                continue
+            updated_iso = updated_at.isoformat()
             incidents.append({
                 ATTR_INCIDENT_NO: identifier,
                 ATTR_TYPE: attrs.get("event") or attrs.get("sub_cat"),
@@ -245,7 +252,15 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_LATITUDE: attrs.get("lat") if attrs.get("lat") is not None else geometry.get("y"),
                 ATTR_LONGITUDE: attrs.get("long") if attrs.get("long") is not None else geometry.get("x"),
             })
-        return {"incidents": incidents, "fallback_source": SOURCE_SA_CFS_GIS}
+        if excluded_stale_count:
+            _LOGGER.warning("SA map omitted %d stale or undated incident(s)", excluded_stale_count)
+        if data["features"] and not incidents:
+            raise UpdateFailed("SA map contains only stale or undated incidents; current count is unknown")
+        return {
+            "incidents": incidents,
+            "fallback_source": SOURCE_SA_CFS_GIS,
+            "excluded_stale_count": excluded_stale_count,
+        }
 
     async def _parse_sa_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse SA CFS JSON format."""

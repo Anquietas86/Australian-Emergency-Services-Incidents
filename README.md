@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.3.2
+**Version:** v0.3.3
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -15,7 +15,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Tasmania (TAS)**: TFS retired its machine-readable RSS/KML feeds in 2026. TAS remains selectable for existing configurations, but its sensors report **unavailable**, not a misleading zero, until a verified replacement feed is found.
 - **Western Australia (WA)**: DFES EmergencyWA API (JSON + warnings feed)
 
-**SA feed status and safety:** The official [SA open-data catalogue](https://data.sa.gov.au/data/dataset/south-australian-country-fire-service-current-incidents-rss-feed) and [CFS incident page](https://www.cfs.sa.gov.au/warnings-restrictions/warnings/incidents-warnings/) still publish links on `data.eso.sa.gov.au`, which returned an HTML “File Unavailable” response on 2 October 2026. The [official CFS map](https://apps.geohub.sa.gov.au/CFSMap/) uses a separate public ArcGIS incident layer; this is the `sa_cfs_gis` fallback. Its records can include historical incidents, and it does **not** provide the equivalent of the CAP warning feed. Check the sensor's `source` attribute and incident timestamps; do not use the fallback count as a safety-critical all-clear. Feed failures are reported as unavailable rather than zero incidents.
+**SA feed status and safety:** The official [SA open-data catalogue](https://data.sa.gov.au/data/dataset/south-australian-country-fire-service-current-incidents-rss-feed) and [CFS incident page](https://www.cfs.sa.gov.au/warnings-restrictions/warnings/incidents-warnings/) still publish links on `data.eso.sa.gov.au`, which returned an HTML “File Unavailable” response on 2 October 2026. The [official CFS map](https://apps.geohub.sa.gov.au/CFSMap/) uses a separate public ArcGIS incident layer; this is the `sa_cfs_gis` fallback. Its records can include historical incidents, and it does **not** provide the equivalent of the CAP warning feed. The fallback excludes records with no update time or older than seven days. If all returned records fail that check, the count is **unavailable**, not zero; if current and stale records coexist, `excluded_stale_count` is recorded in the coordinator data. A long-running incident with no recent update may be excluded, so the map fallback is **not** a safety-critical all-clear. Check the sensor's `source` attribute (`sa_cfs_gis`) and timestamps. Feed failures are reported as unavailable rather than zero incidents.
 
 ### Key Features
 - **Multi-state support**: Monitor incidents across all six Australian states
