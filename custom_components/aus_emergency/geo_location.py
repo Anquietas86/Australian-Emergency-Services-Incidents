@@ -179,6 +179,32 @@ async def async_setup_entry(
             )
 
 
+def _prune_orphaned_incident_entries(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    state: str,
+    incident_entities: dict[str, IncidentEntity],
+) -> None:
+    """Remove old incident registrations even if no longer tracked in memory.
+
+    Only reconcile after a successful fetch: an offline provider must never
+    make an old but potentially active incident appear resolved.
+    """
+    registry = er.async_get(hass)
+    prefix = f"aus_emergency_{state}_".lower()
+    active_ids = {entity._attr_unique_id for entity in incident_entities.values()}
+    for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (
+            registered.platform == DOMAIN
+            and registered.entity_id.startswith("geo_location.")
+            and registered.unique_id.lower().startswith(prefix)
+            and not registered.unique_id.lower().startswith(f"{prefix}cap_")
+            and registered.unique_id not in active_ids
+        ):
+            _LOGGER.info("Removing orphaned incident registration %s", registered.entity_id)
+            registry.async_remove(registered.entity_id)
+
+
 def _setup_incident_entities(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -195,6 +221,12 @@ def _setup_incident_entities(
     incident_entities: dict[str, IncidentEntity] = {}
 
     def _sync_incident_entities():
+        if not incident_coordinator.last_update_success:
+            for entity in incident_entities.values():
+                entity.mark_stale()
+                entity.async_write_ha_state()
+            return
+
         data = incident_coordinator.data or {}
         incidents = data.get("incidents", [])
         seen_ids: set[str] = set()
@@ -251,6 +283,9 @@ def _setup_incident_entities(
                     if ent:
                         ent.mark_stale()
                         ent.fire_change_event(EVENT_REMOVED)
+
+        if remove_stale:
+            _prune_orphaned_incident_entries(hass, entry, state, incident_entities)
 
     incident_coordinator.async_add_listener(_sync_incident_entities)
     _sync_incident_entities()
@@ -533,6 +568,7 @@ class IncidentEntity(GeolocationEvent):
         monitored_zones: list[str] | None = None,
         first: bool = False
     ) -> bool:
+        self._available = True
         self._latitude = item.get(ATTR_LATITUDE)
         self._longitude = item.get(ATTR_LONGITUDE)
 

@@ -2,6 +2,7 @@
 import importlib.util
 import sys
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "aus_emergency"
@@ -22,6 +23,23 @@ class UpdateFailed(Exception):
     pass
 
 
+class CoordinatorEntity:
+    @classmethod
+    def __class_getitem__(cls, item):
+        return cls
+
+    def __init__(self, coordinator):
+        self.coordinator = coordinator
+
+    def async_write_ha_state(self):
+        pass
+
+
+class GeolocationEvent:
+    def async_write_ha_state(self):
+        pass
+
+
 class DataUpdateCoordinator:
     def __init__(self, hass, logger, *, name, update_interval):
         self.hass = hass
@@ -30,17 +48,19 @@ class DataUpdateCoordinator:
         self.data = None
 
 
-for name in ("homeassistant", "homeassistant.helpers", "homeassistant.util", "custom_components", "custom_components.aus_emergency"):
+for name in ("homeassistant", "homeassistant.components", "homeassistant.helpers", "homeassistant.util", "custom_components", "custom_components.aus_emergency"):
     pkg = module(name)
     pkg.__path__ = [str(ROOT)] if name == "custom_components.aus_emergency" else []
 module("homeassistant.core", HomeAssistant=object, ServiceCall=object)
 module("homeassistant.config_entries", ConfigEntry=object, ConfigEntryNotReady=ConfigEntryNotReady)
 module("homeassistant.const", Platform=types.SimpleNamespace(GEO_LOCATION="geo_location", SENSOR="sensor"))
-module("homeassistant.helpers.update_coordinator", DataUpdateCoordinator=DataUpdateCoordinator, UpdateFailed=UpdateFailed)
+module("homeassistant.helpers.update_coordinator", DataUpdateCoordinator=DataUpdateCoordinator, UpdateFailed=UpdateFailed, CoordinatorEntity=CoordinatorEntity)
+module("homeassistant.components.geo_location", GeolocationEvent=GeolocationEvent)
+module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
 module("homeassistant.helpers.config_validation", string=str)
 module("homeassistant.helpers.device_registry", async_get=lambda hass: None)
 module("homeassistant.helpers.entity_registry", async_get=lambda hass: None)
-module("homeassistant.util.dt", now=lambda: None, parse_datetime=lambda value: None, as_local=lambda value: value)
+module("homeassistant.util.dt", now=lambda: datetime.now(timezone.utc), parse_datetime=lambda value: None, as_local=lambda value: value)
 
 
 def load(name, filename):
@@ -58,3 +78,4 @@ const = load("const", "const.py")
 coordinator = load("coordinator", "coordinator.py")
 cap = load("cap_coordinator", "cap_coordinator.py")
 integration = load("integration_under_test", "__init__.py")
+geo_location = load("geo_location", "geo_location.py")

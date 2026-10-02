@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.3.3
+**Version:** v0.3.4
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -48,7 +48,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
   - **TAS** (Tasmania) — Tasmania Fire Service (GeoRSS)
   - **WA** (Western Australia) — DFES EmergencyWA API
 - **Update Interval**: How frequently to poll for new incidents (default: 10 minutes)
-- **Remove Stale Incidents**: Automatically remove incidents no longer in the active feed
+- **Remove Stale Incidents**: Enabled by default. After a successful feed update, remove ended incidents and orphaned registrations from earlier runs. Feed errors never trigger registry cleanup; you can explicitly turn this off to retain old entities.
 - **Expose to Assistants**: Control whether entities are exposed to voice assistants
 - **Zone Monitoring**: Optional — select Home Assistant zones to monitor incidents within them
 

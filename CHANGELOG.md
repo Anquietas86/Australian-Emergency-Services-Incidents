@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.4
+
+- Default `remove_stale` to on for new installations. Existing explicit off choices are still respected.
+- Reconcile the HA entity registry on every successful incident update, removing registrations from previous runs that are no longer in the feed. Cleanup is scoped to the same config entry and state; CAP alerts, sensors, other states, and live incidents are preserved.
+- Keep geo-location entities unavailable during a feed failure and restore availability after recovery; never prune the registry from a failed fetch.
+- Add regression tests for registry scope, startup orphans, explicit opt-out, and feed failure/recovery.
+
 ## v0.3.3
 
 - Reject historical or undated records from the SA CFS map fallback. If its only records are stale, report the incident sensor as unavailable (unknown), never as a live incident or a reassuring zero.
