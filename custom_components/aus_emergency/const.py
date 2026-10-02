@@ -18,6 +18,14 @@ SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD", "TAS", "WA"]
 
 # Data source identifiers
 SOURCE_SA_CFS = "sa_cfs"
+SOURCE_SA_CFS_GIS = "sa_cfs_gis"
+# Public incident layer linked from the official CFS map, used when CRIIMSON is down.
+SA_MAP_INCIDENTS_URL = (
+    "https://cfsdata.geohub.sa.gov.au/server/rest/services/IMS_Read/"
+    "SACFS_and_SAMFS_Incidents_and_Incident_Updates/FeatureServer/1/query"
+    "?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326"
+    "&resultRecordCount=2000&f=json"
+)
 SOURCE_NSW_RFS = "nsw_rfs"
 SOURCE_VIC_EMV = "vic_emv"
 SOURCE_QLD_QFES = "qld_qfes"

@@ -91,8 +91,11 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
 
         async with self._session.get(self.cap_url, timeout=30) as resp:
             if resp.status != 200:
-                _LOGGER.warning("%s CAP feed returned HTTP %s", self._state, resp.status)
-                return {"alerts": []}
+                raise UpdateFailed(f"{self._state} CAP feed returned HTTP {resp.status}")
+            if "xml" not in resp.content_type.lower():
+                raise UpdateFailed(
+                    f"{self._state} CAP feed returned {resp.content_type}, expected XML"
+                )
 
             xml_string = await resp.text()
             root = ET.fromstring(xml_string)

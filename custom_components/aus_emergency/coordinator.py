@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import aiohttp
 from defusedxml import ElementTree as ET
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.dt import now as dt_now, parse_datetime, as_local
+from homeassistant.util.dt import parse_datetime, as_local
 
 from .const import (
     ATTR_INCIDENT_NO,
@@ -30,6 +30,8 @@ from .const import (
     ATTR_LONGITUDE,
     ATTR_INCIDENT_DATETIME,
     FEED_URLS,
+    SA_MAP_INCIDENTS_URL,
+    SOURCE_SA_CFS_GIS,
     DEFAULT_RETRY_DELAY,
     MAX_RETRY_DELAY,
     BACKOFF_MULTIPLIER,
@@ -110,8 +112,8 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
     @property
     def source(self) -> str:
-        """Return the data source identifier."""
-        return self._feed_config.get("source", "unknown")
+        """Return the actual source of the most recent successful update."""
+        return (self.data or {}).get("fallback_source") or self._feed_config.get("source", "unknown")
 
     async def _async_update_data(self) -> dict[str, Any]:
         if self._session is None or self._session.closed:
@@ -148,19 +150,40 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         )
 
     async def _fetch_data(self) -> dict[str, Any]:
-        """Fetch and parse incident data based on state."""
-        # TAS uses GeoRSS (XML), not JSON
+        """Fetch a state feed; use the official CFS map when SA CRIIMSON fails."""
+        try:
+            return await self._fetch_primary_data()
+        except (UpdateFailed, aiohttp.ClientError, ValueError) as primary_error:
+            if self._state != "SA":
+                raise
+            _LOGGER.warning("SA CRIIMSON unavailable (%s); trying official CFS map", primary_error)
+            try:
+                return await self._fetch_sa_map_data()
+            except (UpdateFailed, aiohttp.ClientError, ValueError) as map_error:
+                raise UpdateFailed(
+                    f"SA primary feed failed ({primary_error}); map fallback failed ({map_error})"
+                ) from map_error
+
+    async def _fetch_primary_data(self) -> dict[str, Any]:
+        """Fetch and parse the configured state feed."""
         if self._state == "TAS":
             return await self._fetch_tas_georss()
 
         url = self._feed_config.get("json")
         if not url:
-            return {"incidents": []}
+            raise UpdateFailed(f"No incident feed configured for {self._state}")
 
         async with self._session.get(url, timeout=30) as resp:
             if resp.status != 200:
-                _LOGGER.warning("%s incidents returned HTTP %s", self._state, resp.status)
-                return {"incidents": []}
+                raise UpdateFailed(f"{self._state} incidents returned HTTP {resp.status}")
+            # Queensland publishes JSON with an octet-stream content type.
+            content_type = resp.content_type.lower()
+            if "json" not in content_type and not (
+                self._state == "QLD" and content_type in ("binary/octet-stream", "application/octet-stream")
+            ):
+                raise UpdateFailed(
+                    f"{self._state} incidents returned {resp.content_type}, expected JSON"
+                )
 
             if self._state == "SA":
                 return await self._parse_sa_data(resp)
@@ -173,7 +196,56 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             elif self._state == "WA":
                 return await self._parse_wa_data(resp)
             else:
-                return {"incidents": []}
+                raise UpdateFailed(f"No parser configured for {self._state}")
+
+    async def _fetch_sa_map_data(self) -> dict[str, Any]:
+        """Read the public incident layer used by the official CFS map.
+
+        This layer covers CFS and MFS incidents, but is not equivalent to the
+        CRIIMSON/CAP feeds. Its source is labelled separately for consumers.
+        """
+        async with self._session.get(SA_MAP_INCIDENTS_URL, timeout=30) as resp:
+            if resp.status != 200 or "json" not in resp.content_type.lower():
+                raise UpdateFailed(
+                    f"SA map returned HTTP {resp.status}, {resp.content_type}"
+                )
+            data = await resp.json(content_type=None)
+
+        if not isinstance(data, dict) or data.get("error") or not isinstance(data.get("features"), list):
+            raise UpdateFailed("SA map response is not an incident feature collection")
+        if data.get("exceededTransferLimit"):
+            raise UpdateFailed("SA map incident result was truncated")
+
+        incidents = []
+        for feature in data["features"]:
+            attrs = feature.get("attributes") or {}
+            geometry = feature.get("geometry") or {}
+            identifier = attrs.get("ident") or attrs.get("atom_id")
+            if not identifier:
+                raise UpdateFailed("SA map incident has no stable identifier")
+            updated = attrs.get("updated")
+            updated_iso = (
+                datetime.fromtimestamp(updated / 1000, tz=timezone.utc).isoformat()
+                if isinstance(updated, (int, float)) else updated
+            )
+            incidents.append({
+                ATTR_INCIDENT_NO: identifier,
+                ATTR_TYPE: attrs.get("event") or attrs.get("sub_cat"),
+                ATTR_STATUS: attrs.get("inc_status"),
+                ATTR_LEVEL: attrs.get("warn_level"),
+                ATTR_SEVERITY: _norm_severity(attrs.get("warn_level"), attrs.get("inc_status")),
+                ATTR_LOCATION_NAME: attrs.get("location") or attrs.get("inc_name"),
+                ATTR_REGION: attrs.get("fbd"),
+                ATTR_DATE: updated_iso,
+                ATTR_TIME: None,
+                ATTR_INCIDENT_DATETIME: updated_iso,
+                ATTR_MESSAGE: attrs.get("headline"),
+                ATTR_MESSAGE_LINK: attrs.get("web"),
+                ATTR_AGENCY: attrs.get("authority"),
+                ATTR_LATITUDE: attrs.get("lat") if attrs.get("lat") is not None else geometry.get("y"),
+                ATTR_LONGITUDE: attrs.get("long") if attrs.get("long") is not None else geometry.get("x"),
+            })
+        return {"incidents": incidents, "fallback_source": SOURCE_SA_CFS_GIS}
 
     async def _parse_sa_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse SA CFS JSON format."""
@@ -250,26 +322,25 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                         lon, lat = g["coordinates"][0], g["coordinates"][1]
                         break
 
-            # NSW uses "alertLevel" for severity
-            alert_level = props.get("alertLevel", "").lower()
-            if "emergency" in alert_level:
-                sev = "emergency_warning"
-            elif "watch" in alert_level:
-                sev = "watch_and_act"
-            elif "advice" in alert_level:
-                sev = "advice"
-            else:
-                sev = "info"
+            # The current RFS feed puts the alert level in category and
+            # embeds incident type and status in its HTML description.
+            description = props.get("description") or ""
+            def description_field(field: str, text: str = description) -> str | None:
+                match = re.search(rf"(?:^|<br\s*/?>)\s*{field}:\s*([^<]+)", text, re.I)
+                return match.group(1).strip() if match else None
 
-            # Parse pubDate
+            alert_level = props.get("alertLevel") or props.get("category") or description_field("ALERT LEVEL")
+            sev = _norm_severity(alert_level, None)
+            status = props.get("status") or description_field("STATUS")
+
             pub_date = props.get("pubDate")
             incident_dt = _parse_incident_datetime(pub_date, None)
 
             incidents.append({
                 ATTR_INCIDENT_NO: props.get("guid"),
-                ATTR_TYPE: props.get("category"),
-                ATTR_STATUS: props.get("status"),
-                ATTR_LEVEL: props.get("alertLevel"),
+                ATTR_TYPE: description_field("TYPE") or props.get("category"),
+                ATTR_STATUS: status,
+                ATTR_LEVEL: alert_level,
                 ATTR_SEVERITY: sev,
                 ATTR_LOCATION_NAME: props.get("location") or props.get("title"),
                 ATTR_REGION: props.get("council") or props.get("councilArea"),
@@ -295,8 +366,8 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             results = []
 
         for item in results:
-            lat = item.get("lat")
-            lon = item.get("lon")
+            lat = item.get("latitude", item.get("lat"))
+            lon = item.get("longitude", item.get("lon"))
 
             # Try to parse coordinates if they're strings
             if isinstance(lat, str):
@@ -310,25 +381,26 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 except (ValueError, TypeError):
                     lon = None
 
-            sev = _norm_severity(item.get("feedType"), item.get("status"))
+            status = item.get("incidentStatus") or item.get("status")
+            level = item.get("category2") or item.get("feedType")
+            sev = _norm_severity(level, status)
 
-            # Parse created/updated time
-            created = item.get("created") or item.get("updated")
-            incident_dt = _parse_incident_datetime(created, None)
+            updated = item.get("lastUpdateDateTime") or item.get("created") or item.get("updated")
+            incident_dt = _parse_incident_datetime(updated, None)
 
             incidents.append({
-                ATTR_INCIDENT_NO: item.get("id") or item.get("sourceId"),
-                ATTR_TYPE: item.get("feedType") or item.get("category1"),
-                ATTR_STATUS: item.get("status"),
-                ATTR_LEVEL: item.get("feedType"),
+                ATTR_INCIDENT_NO: item.get("incidentNo") or item.get("id") or item.get("sourceId"),
+                ATTR_TYPE: item.get("incidentType") or item.get("category1") or item.get("feedType"),
+                ATTR_STATUS: status,
+                ATTR_LEVEL: level,
                 ATTR_SEVERITY: sev,
-                ATTR_LOCATION_NAME: item.get("location") or item.get("name"),
-                ATTR_REGION: item.get("lga") or item.get("originId"),
-                ATTR_DATE: created,
+                ATTR_LOCATION_NAME: item.get("incidentLocation") or item.get("location") or item.get("name"),
+                ATTR_REGION: item.get("municipality") or item.get("fireDistrict") or item.get("lga"),
+                ATTR_DATE: updated,
                 ATTR_TIME: None,
                 ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
                 ATTR_MESSAGE_LINK: item.get("url"),
-                ATTR_AGENCY: item.get("sourceOrg") or "VIC EMV",
+                ATTR_AGENCY: item.get("agency") or item.get("sourceOrg") or "VIC EMV",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
             })
@@ -487,16 +559,19 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_LONGITUDE: lon,
             })
 
-        # Also fetch warnings if URL is configured
+        # Warnings include the highest-severity alerts; a partial response must
+        # not present their absence as a trustworthy zero count.
         warnings_url = self._feed_config.get("warnings")
         if warnings_url:
-            try:
-                async with self._session.get(warnings_url, timeout=30) as warn_resp:
-                    if warn_resp.status == 200:
-                        warn_data = await warn_resp.json(content_type=None)
-                        incidents.extend(self._parse_wa_warnings(warn_data))
-            except Exception as exc:
-                _LOGGER.warning("Error fetching WA warnings: %s", exc)
+            async with self._session.get(warnings_url, timeout=30) as warn_resp:
+                if warn_resp.status != 200:
+                    raise UpdateFailed(f"WA warnings returned HTTP {warn_resp.status}")
+                if "json" not in warn_resp.content_type.lower():
+                    raise UpdateFailed(
+                        f"WA warnings returned {warn_resp.content_type}, expected JSON"
+                    )
+                warn_data = await warn_resp.json(content_type=None)
+                incidents.extend(self._parse_wa_warnings(warn_data))
 
         return {"incidents": incidents}
 
@@ -577,12 +652,13 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         """Fetch and parse TAS TFS GeoRSS feed."""
         url = self._feed_config.get("georss")
         if not url:
-            return {"incidents": []}
+            raise UpdateFailed("TAS incident feed retired; no current source is configured")
 
         async with self._session.get(url, timeout=30) as resp:
             if resp.status != 200:
-                _LOGGER.warning("TAS incidents returned HTTP %s", resp.status)
-                return {"incidents": []}
+                raise UpdateFailed(f"TAS incidents returned HTTP {resp.status}")
+            if "xml" not in resp.content_type.lower():
+                raise UpdateFailed(f"TAS incidents returned {resp.content_type}, expected XML")
 
             xml_string = await resp.text()
             return self._parse_tas_georss(xml_string)

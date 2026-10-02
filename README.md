@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.3.0
+**Version:** v0.3.2
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -8,12 +8,14 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Lifecycle events** for automations
 
 ### Supported Regions
-- **South Australia (SA)**: CFS/SES via CRIIMSON feed + CAP alerts
+- **South Australia (SA)**: CFS/SES via CRIIMSON feed + CAP alerts. If CRIIMSON fails, incidents fall back to the public CFS map's CFS/MFS incident layer (CAP warnings are **not** provided by this fallback).
 - **New South Wales (NSW)**: RFS major incidents (GeoJSON)
 - **Victoria (VIC)**: Emergency Management Victoria incidents (JSON)
 - **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts (GeoJSON)
-- **Tasmania (TAS)**: Tasmania Fire Service — TFS retired their RSS/KML machine-readable feeds in 2026 (replaced by alert.tas.gov.au which has no data API). Feed URL set to None — TAS returns 0 incidents until a new feed is available.
+- **Tasmania (TAS)**: TFS retired its machine-readable RSS/KML feeds in 2026. TAS remains selectable for existing configurations, but its sensors report **unavailable**, not a misleading zero, until a verified replacement feed is found.
 - **Western Australia (WA)**: DFES EmergencyWA API (JSON + warnings feed)
+
+**SA feed status and safety:** The official [SA open-data catalogue](https://data.sa.gov.au/data/dataset/south-australian-country-fire-service-current-incidents-rss-feed) and [CFS incident page](https://www.cfs.sa.gov.au/warnings-restrictions/warnings/incidents-warnings/) still publish links on `data.eso.sa.gov.au`, which returned an HTML “File Unavailable” response on 2 October 2026. The [official CFS map](https://apps.geohub.sa.gov.au/CFSMap/) uses a separate public ArcGIS incident layer; this is the `sa_cfs_gis` fallback. Its records can include historical incidents, and it does **not** provide the equivalent of the CAP warning feed. Check the sensor's `source` attribute and incident timestamps; do not use the fallback count as a safety-critical all-clear. Feed failures are reported as unavailable rather than zero incidents.
 
 ### Key Features
 - **Multi-state support**: Monitor incidents across all six Australian states
@@ -165,8 +167,8 @@ data:
 
 ## Current Status
 
-✅ **Stable** — Production-ready for all six Australian states
-- Full incident monitoring for SA, NSW, VIC, QLD, TAS, and WA
-- CAP alert integration for SA
-- Robust error handling and resource management
-- Comprehensive event system for automations
+Feeds are operated by their respective agencies and can be unavailable independently. SA incident monitoring has a best-effort map fallback; SA CAP alerts have no verified fallback. TAS has no currently working machine-readable feed. Treat unavailable entities as **unknown**, not zero incidents.
+
+## Development tests
+
+Install `pytest`, `aiohttp`, `defusedxml`, and `voluptuous` into a Python environment, then run `python -m pytest -q`. Tests use minimal Home Assistant interface stubs and do not replace live HA integration testing.

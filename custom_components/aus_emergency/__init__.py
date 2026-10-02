@@ -4,7 +4,7 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryNotReady
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import Platform
 from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er
@@ -110,14 +110,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "cap_coordinator": list(cap_coordinators.values())[0] if cap_coordinators else None,
     }
 
-    # Initial refresh for all coordinators
-    for state in states:
-        await incident_coordinators[state].async_config_entry_first_refresh()
-        cap_coord = cap_coordinators.get(state)
-        if cap_coord:
-            await cap_coord.async_config_entry_first_refresh()
+    # A provider outage must not prevent healthy states or sensors from loading.
+    # Once the platforms attach listeners, HA schedules further coordinator polls.
+    try:
+        for state in states:
+            for coordinator in (
+                incident_coordinators[state], cap_coordinators.get(state)
+            ):
+                if coordinator is None:
+                    continue
+                try:
+                    await coordinator.async_config_entry_first_refresh()
+                except ConfigEntryNotReady as exc:
+                    _LOGGER.warning("%s feed unavailable during setup: %s", coordinator.name, exc.__cause__ or exc)
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        # No unload callback runs when setup itself fails.
+        for coordinator in (*incident_coordinators.values(), *cap_coordinators.values()):
+            await coordinator.async_close()
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
 
     # Reload integration when options change
     async def _async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:

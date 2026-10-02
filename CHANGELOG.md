@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.2
+
+- Isolate feed failures: failed SA/CAP/TAS sources no longer block healthy states or the integration from loading; unavailable feeds remain unavailable and retry automatically.
+- Reject HTTP errors and non-feed responses instead of reporting an unsafe zero count; close coordinator sessions if setup fails.
+- When the SA CRIIMSON JSON feed is unavailable, use the public incident layer used by the official CFS map as a *best-effort* fallback. Sensors identify it as `sa_cfs_gis`; this layer may contain older records and does not replace CAP warnings.
+- Update VIC incident identifiers, locations, statuses, agency and coordinates for the current feed schema; restore NSW alert severity and status from the current feed.
+- Add offline regression tests for feed failures, partial setup and provider payloads.
+
 ## v0.3.1
 
 - **TAS feed retired**: Set georss URL to None — fire.tas.gov.au RSS/KML feeds permanently retired (410 Gone). All five other state feeds verified 200 OK with live data.
