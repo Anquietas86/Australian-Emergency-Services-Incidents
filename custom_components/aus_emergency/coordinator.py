@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 import aiohttp
 from defusedxml import ElementTree as ET
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.dt import parse_datetime, as_local
+from homeassistant.util.dt import async_get_time_zone, parse_datetime, as_local
 
 from .const import (
     ATTR_INCIDENT_NO,
@@ -33,6 +35,7 @@ from .const import (
     SA_MAP_INCIDENTS_URL,
     SA_MAP_MAX_RECORD_AGE_DAYS,
     SOURCE_SA_CFS_GIS,
+    STATE_TIME_ZONES,
     DEFAULT_RETRY_DELAY,
     MAX_RETRY_DELAY,
     BACKOFF_MULTIPLIER,
@@ -55,20 +58,28 @@ def _norm_severity(level: str | None, status: str | None) -> str:
     return "info"
 
 
-def _parse_incident_datetime(date_str: str | None, time_str: str | None) -> datetime | None:
-    """Parse date and time strings into a datetime object."""
+def _parse_incident_datetime(
+    date_str: str | None,
+    time_str: str | None,
+    tz: tzinfo | None = None,
+) -> datetime | None:
+    """Parse provider date/time strings into an aware local datetime.
+
+    Naive values are interpreted in ``tz`` (the provider's own timezone).
+    Without ``tz`` they are returned naive.
+    """
     if not date_str:
         return None
 
-    # Try various date/time formats
-    datetime_str = date_str
+    datetime_str = str(date_str).strip()
     if time_str:
-        datetime_str = f"{date_str} {time_str}"
+        datetime_str = f"{datetime_str} {time_str}"
 
     # Common formats used by emergency services
     formats = [
         "%d/%m/%Y %H:%M",
         "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %I:%M:%S %p",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%SZ",
@@ -78,21 +89,48 @@ def _parse_incident_datetime(date_str: str | None, time_str: str | None) -> date
         "%Y-%m-%d",
     ]
 
+    parsed: datetime | None = None
     for fmt in formats:
         try:
-            return datetime.strptime(datetime_str, fmt)
+            parsed = datetime.strptime(datetime_str, fmt)
         except (ValueError, TypeError):
             continue
+        if fmt.endswith("Z"):
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        break
 
-    # Try ISO format parsing
+    if parsed is None:
+        # ISO 8601 with fractional seconds or offsets
+        try:
+            parsed = parse_datetime(datetime_str)
+        except (ValueError, TypeError):
+            parsed = None
+        if parsed is None:
+            return None
+
+    if parsed.tzinfo is None:
+        if tz is None:
+            return parsed
+        parsed = parsed.replace(tzinfo=tz)
+    return as_local(parsed)
+
+
+def _to_float(value: Any) -> float | None:
+    """Coerce a feed coordinate to a finite float."""
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        parsed = parse_datetime(datetime_str)
-        if parsed:
-            return as_local(parsed)
-    except (ValueError, TypeError):
-        pass
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
-    return None
+
+def _point_coords(coords: Any) -> tuple[Any, Any]:
+    """Return (lon, lat) from a GeoJSON point coordinate list."""
+    if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+        return coords[0], coords[1]
+    return None, None
 
 
 class IncidentDataCoordinator(DataUpdateCoordinator):
@@ -110,15 +148,28 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         self._consecutive_failures = 0
         self._base_update_seconds = update_seconds
         self._feed_config = FEED_URLS.get(state, FEED_URLS["SA"])
+        self._tz: tzinfo | None = None
+
+    @property
+    def consecutive_failures(self) -> int:
+        """Return the number of consecutive failed updates."""
+        return self._consecutive_failures
 
     @property
     def source(self) -> str:
         """Return the actual source of the most recent successful update."""
         return (self.data or {}).get("fallback_source") or self._feed_config.get("source", "unknown")
 
+    def _parse_dt(self, date_str: str | None, time_str: str | None = None) -> datetime | None:
+        """Parse a provider timestamp, treating naive values as the state's local time."""
+        return _parse_incident_datetime(date_str, time_str, self._tz)
+
     async def _async_update_data(self) -> dict[str, Any]:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+        if self._session is None:
+            self._session = async_get_clientsession(self.hass)
+        if self._tz is None and (tz_name := STATE_TIME_ZONES.get(self._state)):
+            # Loading zoneinfo touches the filesystem, so HA does it off the loop.
+            self._tz = await async_get_time_zone(tz_name)
 
         try:
             result = await self._fetch_data()
@@ -151,6 +202,14 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         )
 
     async def _fetch_data(self) -> dict[str, Any]:
+        """Fetch a state feed and normalise coordinates to floats."""
+        result = await self._fetch_feed_data()
+        for incident in result.get("incidents", []):
+            incident[ATTR_LATITUDE] = _to_float(incident.get(ATTR_LATITUDE))
+            incident[ATTR_LONGITUDE] = _to_float(incident.get(ATTR_LONGITUDE))
+        return result
+
+    async def _fetch_feed_data(self) -> dict[str, Any]:
         """Fetch a state feed; use the official CFS map when SA CRIIMSON fails."""
         try:
             return await self._fetch_primary_data()
@@ -291,7 +350,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             sev = _norm_severity(item.get("Level"), item.get("Status"))
             date_str = item.get("Date")
             time_str = item.get("Time")
-            incident_dt = _parse_incident_datetime(date_str, time_str)
+            incident_dt = self._parse_dt(date_str, time_str)
 
             incidents.append({
                 ATTR_INCIDENT_NO: inc_no,
@@ -329,12 +388,12 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             lat = lon = None
             coords = geom.get("coordinates")
             if coords and geom.get("type") == "Point":
-                lon, lat = coords[0], coords[1] if len(coords) >= 2 else (None, None)
-            elif coords and geom.get("type") == "GeometryCollection":
+                lon, lat = _point_coords(coords)
+            elif geom.get("type") == "GeometryCollection":
                 # Try to get first point from geometry collection
                 for g in geom.get("geometries", []):
                     if g.get("type") == "Point" and g.get("coordinates"):
-                        lon, lat = g["coordinates"][0], g["coordinates"][1]
+                        lon, lat = _point_coords(g["coordinates"])
                         break
 
             # The current RFS feed puts the alert level in category and
@@ -348,8 +407,9 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             sev = _norm_severity(alert_level, None)
             status = props.get("status") or description_field("STATUS")
 
+            # pubDate is UTC (e.g. "5/10/2026 4:15:00 AM" for 15:15 AEDT).
             pub_date = props.get("pubDate")
-            incident_dt = _parse_incident_datetime(pub_date, None)
+            incident_dt = _parse_incident_datetime(pub_date, None, timezone.utc)
 
             incidents.append({
                 ATTR_INCIDENT_NO: props.get("guid"),
@@ -401,7 +461,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             sev = _norm_severity(level, status)
 
             updated = item.get("lastUpdateDateTime") or item.get("created") or item.get("updated")
-            incident_dt = _parse_incident_datetime(updated, None)
+            incident_dt = self._parse_dt(updated)
 
             incidents.append({
                 ATTR_INCIDENT_NO: item.get("incidentNo") or item.get("id") or item.get("sourceId"),
@@ -444,7 +504,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             coords = geom.get("coordinates")
             if coords:
                 if geom.get("type") == "Point":
-                    lon, lat = coords[0], coords[1] if len(coords) >= 2 else (None, None)
+                    lon, lat = _point_coords(coords)
                 elif geom.get("type") == "Polygon" and coords:
                     # For polygons, try to get centroid from first ring
                     try:
@@ -480,7 +540,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 or props.get("created")
                 or props.get("date")
             )
-            incident_dt = _parse_incident_datetime(updated, None)
+            incident_dt = self._parse_dt(updated)
 
             # Build location name from available fields
             location_name = (
@@ -542,7 +602,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
             # Parse datetime
             updated = item.get("updated-date-time") or item.get("start-date-time")
-            incident_dt = _parse_incident_datetime(updated, None)
+            incident_dt = self._parse_dt(updated)
 
             # Build location name from address and suburbs
             location_name = location.get("value", "")
@@ -627,7 +687,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
             # Parse datetime
             updated = item.get("published-date-time")
-            incident_dt = _parse_incident_datetime(updated, None)
+            incident_dt = self._parse_dt(updated)
 
             # Build location name
             location_name = location.get("value", "")
@@ -742,7 +802,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             sev = _norm_severity(inc_type, status)
 
             # Parse pubDate
-            incident_dt = _parse_incident_datetime(pub_date, None)
+            incident_dt = self._parse_dt(pub_date)
 
             # Use guid or generate from title
             incident_no = guid or title
@@ -767,9 +827,8 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         return {"incidents": incidents}
 
     async def async_close(self) -> None:
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Release resources; the shared HA client session is never closed here."""
+        self._session = None
 
 
 # Backwards compatibility alias

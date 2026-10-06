@@ -12,10 +12,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.dt import now as dt_now
+from homeassistant.util import slugify
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .utils import haversine_distance
 from .const import (
-    _haversine_distance,
     DOMAIN,
     CONF_REMOVE_STALE,
     CONF_EXPOSE_TO_ASSISTANTS,
@@ -80,23 +81,35 @@ def _build_summary(attrs: dict) -> str:
     return " · ".join([s for s in [st, reg, when] if s])
 
 
+VOICE_ASSISTANTS = ("conversation", "cloud.google_assistant")
+
+# Volatile or bulky attributes kept out of the recorder database
+UNRECORDED_GEO_ATTRIBUTES = frozenset({
+    ATTR_DURATION_MINUTES,
+    "last_seen",
+    "description",
+    "instruction",
+    "areas",
+})
+
+
 def _expose_entity_to_voice_assistants(hass: HomeAssistant, entity_id: str) -> None:
-    """Expose an entity to voice assistants."""
-    registry = er.async_get(hass)
-    if entity_id and registry.async_get(entity_id):
+    """Expose a registered entity to voice assistants."""
+    # Imported here so the platform loads even where the component is unavailable.
+    from homeassistant.components.homeassistant.exposed_entities import (  # noqa: PLC0415
+        async_expose_entity,
+    )
+
+    for assistant in VOICE_ASSISTANTS:
         try:
-            registry.async_update_entity_options(
-                entity_id,
-                "conversation",
-                {"should_expose": True}
-            )
-            registry.async_update_entity_options(
-                entity_id,
-                "cloud.google_assistant",
-                {"should_expose": True}
-            )
-        except Exception as e:
-            _LOGGER.debug("Could not expose %s to voice assistants: %s", entity_id, e)
+            async_expose_entity(hass, assistant, entity_id, True)
+        except Exception as err:  # noqa: BLE001 - exposure is best effort
+            _LOGGER.debug("Could not expose %s to %s: %s", entity_id, assistant, err)
+
+
+def _is_registered(hass: HomeAssistant, unique_id: str) -> bool:
+    """Return True if this platform registered the unique_id on an earlier run."""
+    return er.async_get(hass).async_get_entity_id("geo_location", DOMAIN, unique_id) is not None
 
 
 def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zone_entity_id: str) -> bool:
@@ -118,7 +131,7 @@ def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zo
     if zone_radius <= 0:
         return False
 
-    distance = _haversine_distance(lat, lon, zone_lat, zone_lon)
+    distance = haversine_distance(lat, lon, zone_lat, zone_lon)
     return distance <= zone_radius
 
 
@@ -184,24 +197,29 @@ def _prune_orphaned_incident_entries(
     entry: ConfigEntry,
     state: str,
     incident_entities: dict[str, IncidentEntity],
+    *,
+    cap: bool = False,
 ) -> None:
-    """Remove old incident registrations even if no longer tracked in memory.
+    """Remove old incident (or CAP alert) registrations no longer tracked in memory.
 
     Only reconcile after a successful fetch: an offline provider must never
     make an old but potentially active incident appear resolved.
     """
     registry = er.async_get(hass)
     prefix = f"aus_emergency_{state}_".lower()
+    cap_prefix = f"{prefix}cap_"
     active_ids = {entity._attr_unique_id for entity in incident_entities.values()}
     for registered in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = registered.unique_id.lower()
         if (
             registered.platform == DOMAIN
             and registered.entity_id.startswith("geo_location.")
-            and registered.unique_id.lower().startswith(prefix)
-            and not registered.unique_id.lower().startswith(f"{prefix}cap_")
+            and unique_id.startswith(prefix)
+            and unique_id.startswith(cap_prefix) == cap
             and registered.unique_id not in active_ids
         ):
-            _LOGGER.info("Removing orphaned incident registration %s", registered.entity_id)
+            _LOGGER.info("Removing orphaned %s registration %s",
+                         "CAP alert" if cap else "incident", registered.entity_id)
             registry.async_remove(registered.entity_id)
 
 
@@ -254,40 +272,45 @@ def _setup_incident_entities(
                     monitored_zones=monitored_zones,
                     state_code=state,
                 )
+                # An incident registered on an earlier run is not new: a restart
+                # or reload must not re-announce every active incident.
+                is_new = not _is_registered(hass, ent._attr_unique_id)
+                ent.expose_on_add = expose_to_assistants and is_new
                 incident_entities[full_id] = ent
-                async_add_entities([ent], update_before_add=True)
-                ent.fire_change_event(EVENT_CREATED)
-                if expose_to_assistants:
-                    _expose_entity_to_voice_assistants(hass, ent.entity_id)
+                async_add_entities([ent])
+                if is_new:
+                    ent.fire_change_event(EVENT_CREATED)
             else:
-                if ent.update_from_item(item, monitored_zones):
-                    ent.fire_change_event(EVENT_UPDATED)
+                was_ended = ent.ended
+                changed = ent.update_from_item(item, monitored_zones)
                 ent.async_write_ha_state()
+                if was_ended:
+                    ent.fire_change_event(EVENT_CREATED)
+                elif changed:
+                    ent.fire_change_event(EVENT_UPDATED)
 
-        stale_ids = [eid for eid in list(incident_entities.keys()) if eid not in seen_ids]
+        stale_ids = [eid for eid in incident_entities if eid not in seen_ids]
         if stale_ids:
-            if remove_stale:
-                registry = er.async_get(hass)
-                for sid in stale_ids:
-                    ent = incident_entities.pop(sid, None)
-                    if ent:
-                        ent.fire_change_event(EVENT_REMOVED)
-                        if ent.entity_id:
-                            entry_reg = registry.async_get(ent.entity_id)
-                            if entry_reg:
-                                registry.async_remove(ent.entity_id)
-                                _LOGGER.debug("Removed stale geo entity %s", ent.entity_id)
-            else:
-                for sid in stale_ids:
-                    ent = incident_entities.pop(sid, None)
-                    if ent:
-                        ent.mark_stale()
+            registry = er.async_get(hass)
+            for sid in stale_ids:
+                if remove_stale:
+                    ent = incident_entities.pop(sid)
+                    ent.fire_change_event(EVENT_REMOVED)
+                    if ent.entity_id and registry.async_get(ent.entity_id):
+                        registry.async_remove(ent.entity_id)
+                        _LOGGER.debug("Removed stale geo entity %s", ent.entity_id)
+                else:
+                    # Keep tracking it so it can come back under the same unique_id.
+                    ent = incident_entities[sid]
+                    if not ent.ended:
+                        ent.mark_stale(ended=True)
+                        ent.async_write_ha_state()
                         ent.fire_change_event(EVENT_REMOVED)
 
         if remove_stale:
             _prune_orphaned_incident_entries(hass, entry, state, incident_entities)
 
-    incident_coordinator.async_add_listener(_sync_incident_entities)
+    entry.async_on_unload(incident_coordinator.async_add_listener(_sync_incident_entities))
     _sync_incident_entities()
 
 
@@ -306,6 +329,10 @@ def _setup_cap_entities(
     cap_hashes: dict[str, str] = {}
 
     def _sync_cap_entities():
+        # Keep existing alerts during a CAP outage; never treat it as all clear.
+        if not cap_coordinator.last_update_success:
+            return
+
         data = cap_coordinator.data or {}
         alerts = data.get("alerts", [])
         seen_ids: set[str] = set()
@@ -331,12 +358,13 @@ def _setup_cap_entities(
                     monitored_zones=monitored_zones,
                     state_code=state,
                 )
+                is_new = not _is_registered(hass, ent._attr_unique_id)
+                ent.expose_on_add = expose_to_assistants and is_new
                 cap_entities[full_id] = ent
                 cap_hashes[full_id] = alert_hash
-                async_add_entities([ent], update_before_add=True)
-                ent.fire_change_event(EVENT_CAP_CREATED)
-                if expose_to_assistants:
-                    _expose_entity_to_voice_assistants(hass, ent.entity_id)
+                async_add_entities([ent])
+                if is_new:
+                    ent.fire_change_event(EVENT_CAP_CREATED)
             else:
                 old_hash = cap_hashes.get(full_id)
                 if old_hash != alert_hash:
@@ -344,25 +372,43 @@ def _setup_cap_entities(
                     ent.async_write_ha_state()
                     ent.fire_change_event(EVENT_CAP_UPDATED)
 
-        stale_ids = [eid for eid in list(cap_entities.keys()) if eid not in seen_ids]
+        stale_ids = [eid for eid in cap_entities if eid not in seen_ids]
         if stale_ids:
             registry = er.async_get(hass)
             for sid in stale_ids:
-                ent = cap_entities.pop(sid, None)
+                ent = cap_entities.pop(sid)
                 cap_hashes.pop(sid, None)
-                if ent:
-                    ent.fire_change_event(EVENT_CAP_REMOVED)
-                    if ent.entity_id:
-                        registry.async_remove(ent.entity_id)
-                        _LOGGER.debug("Removed stale CAP geo entity %s", ent.entity_id)
+                ent.fire_change_event(EVENT_CAP_REMOVED)
+                if ent.entity_id and registry.async_get(ent.entity_id):
+                    registry.async_remove(ent.entity_id)
+                    _LOGGER.debug("Removed stale CAP geo entity %s", ent.entity_id)
 
-    cap_coordinator.async_add_listener(_sync_cap_entities)
+        # Alerts that expired while HA was down are only in the registry.
+        _prune_orphaned_incident_entries(hass, entry, state, cap_entities, cap=True)
+
+    entry.async_on_unload(cap_coordinator.async_add_listener(_sync_cap_entities))
     _sync_cap_entities()
+
+
+def _parse_cap_points(text: str) -> list[tuple[float, float]]:
+    """Parse CAP "lat,lon lat,lon ..." text, skipping malformed pairs."""
+    points = []
+    for pair in text.split():
+        parts = pair.split(",")
+        if len(parts) != 2:
+            continue
+        try:
+            points.append((float(parts[0]), float(parts[1])))
+        except ValueError:
+            continue
+    return points
 
 
 class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationEvent):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert"
+    _unrecorded_attributes = UNRECORDED_GEO_ATTRIBUTES
+    expose_on_add = False
 
     def __init__(
         self,
@@ -389,6 +435,11 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         self.entity_id = f"geo_location.{self._attr_object_id}"
         self._attr_has_entity_name = False
         self._attr_device_info = device_info
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.expose_on_add:
+            _expose_entity_to_voice_assistants(self.hass, self.entity_id)
 
     def fire_change_event(self, event_type: str) -> None:
         """Fire a CAP alert change event."""
@@ -427,24 +478,16 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         for area in alert.get("areas", []):
             # Handle polygons
             for poly_str in area.get("polygon", []):
-                points = [p.strip().split(',') for p in poly_str.split(' ')]
-                for lat_str, lon_str in points:
-                    try:
-                        all_lats.append(float(lat_str))
-                        all_lons.append(float(lon_str))
-                    except (ValueError, TypeError):
-                        pass
+                for lat, lon in _parse_cap_points(poly_str):
+                    all_lats.append(lat)
+                    all_lons.append(lon)
 
-            # Handle circles (use center point)
+            # Handle circles ("lat,lon radius"; use the center point)
             for circle_str in area.get("circle", []):
-                parts = circle_str.replace(',', ' ').split()
-                if len(parts) >= 2:
-                    try:
-                        lat, lon = float(parts[0]), float(parts[1])
-                        all_lats.append(lat)
-                        all_lons.append(lon)
-                    except (ValueError, TypeError):
-                        pass
+                center = _parse_cap_points(circle_str.split()[0]) if circle_str.split() else []
+                for lat, lon in center:
+                    all_lats.append(lat)
+                    all_lons.append(lon)
 
         if all_lats and all_lons:
             return statistics.mean(all_lats), statistics.mean(all_lons)
@@ -455,7 +498,8 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     def name(self) -> str:
         if alert := self._alert_data:
             event = alert.get("event", "Alert")
-            area = alert.get("areas", [{}])[0].get("areaDesc", "Unknown Area")
+            areas = alert.get("areas") or [{}]
+            area = areas[0].get("areaDesc") or "Unknown Area"
             return f"{event} for {area}"
         return "CAP Alert"
 
@@ -508,12 +552,17 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         if home_lat is None or home_lon is None:
             return None
 
-        return round(_haversine_distance(
+        return round(haversine_distance(
             home_lat, home_lon, self.latitude, self.longitude, radius=6371.0
         ), 1)
 
 
 class IncidentEntity(GeolocationEvent):
+    # Pushed by the coordinator listener; nothing to poll.
+    _attr_should_poll = False
+    _unrecorded_attributes = UNRECORDED_GEO_ATTRIBUTES
+    expose_on_add = False
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -527,6 +576,7 @@ class IncidentEntity(GeolocationEvent):
         self.hass = hass
         self._source = source
         self._available = True
+        self.ended = False
         self._attrs: Dict[str, Any] = {}
         self._latitude: float | None = item.get(ATTR_LATITUDE)
         self._longitude: float | None = item.get(ATTR_LONGITUDE)
@@ -544,7 +594,8 @@ class IncidentEntity(GeolocationEvent):
         # Entity ID format: geo_location.aus_emergency_{state}_{incident_no}
         self._attr_object_id = f"aus_emergency_{state_code}_{raw_incident_no}".lower()
         self._attr_unique_id = self._attr_object_id
-        self.entity_id = f"geo_location.{self._attr_object_id}"
+        # Feed ids can be URLs (NSW guid), so the entity_id needs slugifying.
+        self.entity_id = f"geo_location.{slugify(self._attr_object_id)}"
         self._attr_has_entity_name = False
 
         self._state: str | None = None
@@ -569,6 +620,7 @@ class IncidentEntity(GeolocationEvent):
         first: bool = False
     ) -> bool:
         self._available = True
+        self.ended = False
         self._latitude = item.get(ATTR_LATITUDE)
         self._longitude = item.get(ATTR_LONGITUDE)
 
@@ -681,21 +733,20 @@ class IncidentEntity(GeolocationEvent):
         if home_lat is None or home_lon is None:
             return None
 
-        from math import radians, sin, cos, sqrt, atan2
-        R = 6371  # Earth's radius in km
+        return round(haversine_distance(
+            home_lat, home_lon, self._latitude, self._longitude, radius=6371.0
+        ), 1)
 
-        lat1, lon1 = radians(home_lat), radians(home_lon)
-        lat2, lon2 = radians(self._latitude), radians(self._longitude)
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self.expose_on_add:
+            _expose_entity_to_voice_assistants(self.hass, self.entity_id)
 
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-
-        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-        c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return round(R * c, 1)
-
-    def mark_stale(self) -> None:
+    def mark_stale(self, *, ended: bool = False) -> None:
+        """Mark unavailable; ended means the incident left the feed (not a feed outage)."""
         self._available = False
+        if ended:
+            self.ended = True
 
     @property
     def object_id(self) -> str | None:

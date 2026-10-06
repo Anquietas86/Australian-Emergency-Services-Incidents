@@ -10,11 +10,26 @@ CONF_ZONES = "zones"
 DEFAULT_STATE = "SA"
 DEFAULT_STATES = ["SA"]
 DEFAULT_UPDATE_INTERVAL = 600  # seconds
+MIN_UPDATE_INTERVAL = 60  # seconds; protects public feeds from runaway polling
+MAX_UPDATE_INTERVAL = 86400
 DEFAULT_REMOVE_STALE = True
-DEFAULT_EXPOSE_TO_ASSISTANTS = True
+DEFAULT_EXPOSE_TO_ASSISTANTS = False
 
 # Supported states
 SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD", "TAS", "WA"]
+# States with no machine-readable feed are kept for existing configs but not offered for new selections.
+UNAVAILABLE_STATES = ["TAS"]
+SELECTABLE_STATES = [s for s in SUPPORTED_STATES if s not in UNAVAILABLE_STATES]
+
+# Timezone each provider publishes naive local timestamps in
+STATE_TIME_ZONES = {
+    "SA": "Australia/Adelaide",
+    "NSW": "Australia/Sydney",
+    "VIC": "Australia/Melbourne",
+    "QLD": "Australia/Brisbane",
+    "TAS": "Australia/Hobart",
+    "WA": "Australia/Perth",
+}
 
 # Data source identifiers
 SOURCE_SA_CFS = "sa_cfs"
@@ -163,6 +178,3 @@ STATE_DEVICE_INFO = {
     "TAS": DEVICE_INFO_TAS_TFS,
     "WA": DEVICE_INFO_WA_DFES,
 }
-
-# Re-export shared utilities
-from .utils import haversine_distance as _haversine_distance  # noqa: E402

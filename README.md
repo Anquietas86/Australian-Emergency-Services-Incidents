@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.3.4
+**Version:** v0.3.5
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -12,7 +12,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **New South Wales (NSW)**: RFS major incidents (GeoJSON)
 - **Victoria (VIC)**: Emergency Management Victoria incidents (JSON)
 - **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts (GeoJSON)
-- **Tasmania (TAS)**: TFS retired its machine-readable RSS/KML feeds in 2026. TAS remains selectable for existing configurations, but its sensors report **unavailable**, not a misleading zero, until a verified replacement feed is found.
+- **Tasmania (TAS)**: TFS retired its machine-readable RSS/KML feeds in 2026. TAS is no longer offered for new selections; existing configurations keep it, but its sensors report **unavailable**, not a misleading zero, until a verified replacement feed is found.
 - **Western Australia (WA)**: DFES EmergencyWA API (JSON + warnings feed)
 
 **SA feed status and safety:** The official [SA open-data catalogue](https://data.sa.gov.au/data/dataset/south-australian-country-fire-service-current-incidents-rss-feed) and [CFS incident page](https://www.cfs.sa.gov.au/warnings-restrictions/warnings/incidents-warnings/) still publish links on `data.eso.sa.gov.au`, which returned an HTML “File Unavailable” response on 2 October 2026. The [official CFS map](https://apps.geohub.sa.gov.au/CFSMap/) uses a separate public ArcGIS incident layer; this is the `sa_cfs_gis` fallback. Its records can include historical incidents, and it does **not** provide the equivalent of the CAP warning feed. The fallback excludes records with no update time or older than seven days. If all returned records fail that check, the count is **unavailable**, not zero; if current and stale records coexist, `excluded_stale_count` is recorded in the coordinator data. A long-running incident with no recent update may be excluded, so the map fallback is **not** a safety-critical all-clear. Check the sensor's `source` attribute (`sa_cfs_gis`) and timestamps. Feed failures are reported as unavailable rather than zero incidents.
@@ -37,7 +37,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 1. Clone/download `custom_components/aus_emergency/` to your Home Assistant `config/` directory.
 2. Restart Home Assistant.
 3. Navigate to **Settings → Devices & Services → Create Integration** → search for *Australian Emergency Services Incidents*.
-4. Select your states (SA, NSW, VIC, QLD, TAS, WA) and configure your preferences.
+4. Select your states (SA, NSW, VIC, QLD, WA) and configure your preferences. Only one instance of the integration can be added; use its options to change states.
 
 ### Configuration Options
 - **States**: Select one or more emergency service regions:
@@ -45,11 +45,11 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
   - **NSW** (New South Wales) — RFS major incidents
   - **VIC** (Victoria) — Emergency Management Victoria
   - **QLD** (Queensland) — Queensland Fire and Emergency Services
-  - **TAS** (Tasmania) — Tasmania Fire Service (GeoRSS)
+  - **TAS** (Tasmania) — no current feed; only kept for existing configurations
   - **WA** (Western Australia) — DFES EmergencyWA API
-- **Update Interval**: How frequently to poll for new incidents (default: 10 minutes)
-- **Remove Stale Incidents**: Enabled by default. After a successful feed update, remove ended incidents and orphaned registrations from earlier runs. Feed errors never trigger registry cleanup; you can explicitly turn this off to retain old entities.
-- **Expose to Assistants**: Control whether entities are exposed to voice assistants
+- **Update Interval**: How frequently to poll for new incidents, 60 to 86400 seconds (default: 10 minutes)
+- **Remove Stale Incidents**: Enabled by default. After a successful feed update, remove ended incidents and orphaned registrations from earlier runs. Feed errors never trigger registry cleanup; you can explicitly turn this off to keep ended incidents as unavailable entities, which become available again if the incident returns.
+- **Expose to Assistants**: Off by default. When on, newly created incident entities are exposed to Assist and Google Assistant. Existing entities are never re-exposed, so manual changes stick.
 - **Zone Monitoring**: Optional — select Home Assistant zones to monitor incidents within them
 
 ## Entities Created
@@ -153,8 +153,7 @@ data:
 ```
 
 ## Requirements
-- **Home Assistant** 2023.12+
-- **aiohttp** - for async HTTP requests
+- **Home Assistant** 2024.6+
 - **defusedxml** - for secure XML parsing
 
 ## Technical Details

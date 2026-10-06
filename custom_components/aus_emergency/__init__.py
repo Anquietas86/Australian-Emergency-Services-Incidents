@@ -19,6 +19,8 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_STATE,
     DEFAULT_STATES,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
     STATE_DEVICE_INFO,
     SUPPORTED_STATES,
     FEED_URLS,
@@ -27,6 +29,8 @@ from .coordinator import IncidentDataCoordinator
 from .cap_coordinator import CFSCAPDataCoordinator
 
 PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +85,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_UPDATE_INTERVAL,
         entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
     )
+    try:
+        update_seconds = int(update_seconds)
+    except (TypeError, ValueError):
+        update_seconds = DEFAULT_UPDATE_INTERVAL
+    # Entries saved before validation existed may hold 0 or negative values,
+    # which would make the coordinators poll public feeds continuously.
+    update_seconds = min(max(update_seconds, MIN_UPDATE_INTERVAL), MAX_UPDATE_INTERVAL)
 
     # Support both new multi-state and legacy single-state configs
     states = entry.options.get(CONF_STATES) or entry.data.get(CONF_STATES)
@@ -176,12 +187,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         hass.data[DOMAIN].pop(entry.entry_id)
 
-    # If it's the last entry, remove services and clean up domain data
-    if not hass.data[DOMAIN]:
-        hass.services.async_remove(DOMAIN, SERVICE_REFRESH)
-        hass.services.async_remove(DOMAIN, SERVICE_REMOVE_STATE)
-        hass.data.pop(DOMAIN)
-
+    # Services are registered once in async_setup, which does not run again on
+    # reload, so they must stay registered when the last entry unloads.
     return unload_ok
 
 

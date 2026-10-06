@@ -50,7 +50,7 @@ async def async_get_config_entry_diagnostics(
                 if coordinator.update_interval
                 else None
             ),
-            "consecutive_failures": coordinator._consecutive_failures,
+            "consecutive_failures": coordinator.consecutive_failures,
             "incident_count": len(incidents),
         })
 
@@ -72,7 +72,7 @@ async def async_get_config_entry_diagnostics(
                 if coordinator.update_interval
                 else None
             ),
-            "consecutive_failures": coordinator._consecutive_failures,
+            "consecutive_failures": coordinator.consecutive_failures,
             "has_cap_feed": coordinator.cap_url is not None,
             "alert_count": len(alerts),
         })
