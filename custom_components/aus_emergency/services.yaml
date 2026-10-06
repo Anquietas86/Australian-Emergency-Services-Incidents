@@ -6,7 +6,7 @@ remove_state:
   description: Removes the device and all entities for a specific state. Use this to clean up orphaned devices after removing a state from the configuration.
   fields:
     state:
-      description: The state code to remove (SA, NSW, VIC, QLD, TAS, or WA).
+      description: The state code to remove (SA, NSW, VIC, QLD, TAS, WA or ACT).
       required: true
       example: "NSW"
       selector:
@@ -18,3 +18,4 @@ remove_state:
             - "QLD"
             - "TAS"
             - "WA"
+            - "ACT"

@@ -1,20 +1,20 @@
 {
   "domain": "aus_emergency",
   "name": "Australian Emergency Services Incidents",
-  "version": "0.3.5",
-  "documentation": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents",
-  "issue_tracker": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents/issues",
-  "requirements": [
-    "defusedxml"
-  ],
   "codeowners": [
     "@Anquietas86"
   ],
   "config_flow": true,
+  "documentation": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents",
   "integration_type": "service",
-  "single_config_entry": true,
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Anquietas86/Australian-Emergency-Services-Incidents/issues",
   "loggers": [
     "custom_components.aus_emergency"
-  ]
+  ],
+  "requirements": [
+    "defusedxml"
+  ],
+  "single_config_entry": true,
+  "version": "0.4.0"
 }

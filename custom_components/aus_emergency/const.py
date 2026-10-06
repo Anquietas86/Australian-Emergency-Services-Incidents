@@ -6,6 +6,10 @@ CONF_UPDATE_INTERVAL = "update_interval"
 CONF_REMOVE_STALE = "remove_stale"
 CONF_EXPOSE_TO_ASSISTANTS = "expose_to_assistants"
 CONF_ZONES = "zones"
+CONF_RADIUS = "radius"  # km; 0 = whole state
+CONF_ZONE_BUFFER = "zone_buffer"  # km added to each zone's own radius
+CONF_ALERT_RADIUS = "alert_radius"  # km, for the nearby emergency binary sensor
+CONF_ALERT_MIN_SEVERITY = "alert_min_severity"
 
 DEFAULT_STATE = "SA"
 DEFAULT_STATES = ["SA"]
@@ -14,9 +18,17 @@ MIN_UPDATE_INTERVAL = 60  # seconds; protects public feeds from runaway polling
 MAX_UPDATE_INTERVAL = 86400
 DEFAULT_REMOVE_STALE = True
 DEFAULT_EXPOSE_TO_ASSISTANTS = False
+DEFAULT_RADIUS = 0
+DEFAULT_ZONE_BUFFER = 0
+DEFAULT_ALERT_RADIUS = 20
+DEFAULT_ALERT_MIN_SEVERITY = "watch_and_act"
+MAX_RADIUS_KM = 5000
+
+# Severities in increasing order of urgency; all_clear never triggers an alert.
+SEVERITY_ORDER = ["info", "advice", "watch_and_act", "emergency_warning"]
 
 # Supported states
-SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD", "TAS", "WA"]
+SUPPORTED_STATES = ["SA", "NSW", "VIC", "QLD", "TAS", "WA", "ACT"]
 # States with no machine-readable feed are kept for existing configs but not offered for new selections.
 UNAVAILABLE_STATES = ["TAS"]
 SELECTABLE_STATES = [s for s in SUPPORTED_STATES if s not in UNAVAILABLE_STATES]
@@ -29,6 +41,7 @@ STATE_TIME_ZONES = {
     "QLD": "Australia/Brisbane",
     "TAS": "Australia/Hobart",
     "WA": "Australia/Perth",
+    "ACT": "Australia/Sydney",
 }
 
 # Data source identifiers
@@ -47,6 +60,7 @@ SOURCE_VIC_EMV = "vic_emv"
 SOURCE_QLD_QFES = "qld_qfes"
 SOURCE_TAS_TFS = "tas_tfs"
 SOURCE_WA_DFES = "wa_dfes"
+SOURCE_ACT_ESA = "act_esa"
 
 # Feed URLs by state
 FEED_URLS = {
@@ -62,6 +76,8 @@ FEED_URLS = {
     },
     "VIC": {
         "json": "https://data.emergency.vic.gov.au/Show?pageId=getIncidentJSON",
+        # Public warnings (with warning-area polygons) from the VicEmergency map.
+        "warnings": "https://emergency.vic.gov.au/public/osom-geojson.json",
         "cap": None,
         "source": SOURCE_VIC_EMV,
     },
@@ -81,6 +97,11 @@ FEED_URLS = {
         "warnings": "https://api.emergency.wa.gov.au/v1/warnings",
         "cap": None,
         "source": SOURCE_WA_DFES,
+    },
+    "ACT": {
+        "georss": "https://www.esa.act.gov.au/feeds/currentincidents.xml",
+        "cap": None,
+        "source": SOURCE_ACT_ESA,
     },
 }
 
@@ -104,6 +125,16 @@ ATTR_LONGITUDE = "longitude"
 ATTR_INCIDENT_DATETIME = "incident_datetime"
 ATTR_DURATION_MINUTES = "duration_minutes"
 ATTR_IN_ZONE = "in_zone"
+ATTR_DISTANCE_KM = "distance_km"
+ATTR_BEARING = "bearing"
+ATTR_DIRECTION = "direction"
+ATTR_HOME_IN_AREA = "home_in_area"
+# Warning-area rings as (lat, lon) lists. Internal only: never written to
+# attributes or events, where it would blow the attribute size limit.
+ATTR_POLYGONS = "_polygons"
+
+# Consecutive failed updates before a Repairs issue is raised
+FEED_ISSUE_FAILURE_THRESHOLD = 3
 
 # High severity levels for filtering
 HIGH_SEVERITY_LEVELS = ["emergency_warning", "watch_and_act"]
@@ -170,6 +201,13 @@ DEVICE_INFO_WA_DFES = {
     "model": "EmergencyWA API",
 }
 
+DEVICE_INFO_ACT_ESA = {
+    "identifiers": {("aus_emergency", "act_esa")},
+    "name": "Australian Capital Territory",
+    "manufacturer": "ACT Government",
+    "model": "ESA Current Incidents Feed",
+}
+
 STATE_DEVICE_INFO = {
     "SA": DEVICE_INFO_SA_CFS,
     "NSW": DEVICE_INFO_NSW_RFS,
@@ -177,4 +215,5 @@ STATE_DEVICE_INFO = {
     "QLD": DEVICE_INFO_QLD_QFES,
     "TAS": DEVICE_INFO_TAS_TFS,
     "WA": DEVICE_INFO_WA_DFES,
+    "ACT": DEVICE_INFO_ACT_ESA,
 }

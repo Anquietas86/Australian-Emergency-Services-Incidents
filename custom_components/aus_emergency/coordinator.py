@@ -9,6 +9,7 @@ import aiohttp
 from defusedxml import ElementTree as ET
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import async_get_time_zone, parse_datetime, as_local
@@ -31,7 +32,15 @@ from .const import (
     ATTR_LATITUDE,
     ATTR_LONGITUDE,
     ATTR_INCIDENT_DATETIME,
+    ATTR_DISTANCE_KM,
+    ATTR_BEARING,
+    ATTR_DIRECTION,
+    ATTR_HOME_IN_AREA,
+    ATTR_POLYGONS,
+    DOMAIN,
+    FEED_ISSUE_FAILURE_THRESHOLD,
     FEED_URLS,
+    UNAVAILABLE_STATES,
     SA_MAP_INCIDENTS_URL,
     SA_MAP_MAX_RECORD_AGE_DAYS,
     SOURCE_SA_CFS_GIS,
@@ -40,6 +49,7 @@ from .const import (
     MAX_RETRY_DELAY,
     BACKOFF_MULTIPLIER,
 )
+from .utils import compass_direction, distance_to_incident, initial_bearing
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +95,7 @@ def _parse_incident_datetime(
         "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%dT%H:%M:%S%z",
         "%d %b %Y %H:%M",
+        "%d %b %Y %H:%M:%S",
         "%d/%m/%Y",
         "%Y-%m-%d",
     ]
@@ -124,6 +135,80 @@ def _to_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None
+
+
+# Bound the work done per incident; warning areas are rarely this detailed.
+MAX_POLYGON_RINGS = 20
+MAX_RING_POINTS = 2000
+
+
+def _ring_to_lat_lon(ring: Any) -> list[tuple[float, float]]:
+    """Convert a GeoJSON [lon, lat(, z)] ring to (lat, lon) tuples."""
+    points: list[tuple[float, float]] = []
+    if not isinstance(ring, list):
+        return points
+    step = max(1, len(ring) // MAX_RING_POINTS)
+    for point in ring[::step]:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        lon, lat = _to_float(point[0]), _to_float(point[1])
+        if lat is not None and lon is not None:
+            points.append((lat, lon))
+    return points
+
+
+def _extract_polygons(geometry: Any) -> list[list[tuple[float, float]]]:
+    """Return outer rings of every (Multi)Polygon in a GeoJSON geometry."""
+    if not isinstance(geometry, dict):
+        return []
+    geom_type = geometry.get("type")
+    coords = geometry.get("coordinates")
+    rings: list[Any] = []
+    if geom_type == "Polygon" and isinstance(coords, list) and coords:
+        rings = [coords[0]]
+    elif geom_type == "MultiPolygon" and isinstance(coords, list):
+        rings = [poly[0] for poly in coords if isinstance(poly, list) and poly]
+    elif geom_type == "GeometryCollection":
+        polygons: list[list[tuple[float, float]]] = []
+        for member in geometry.get("geometries") or []:
+            polygons.extend(_extract_polygons(member))
+        return polygons[:MAX_POLYGON_RINGS]
+    polygons = [r for r in (_ring_to_lat_lon(ring) for ring in rings) if len(r) >= 3]
+    return polygons[:MAX_POLYGON_RINGS]
+
+
+def _first_point(geometry: Any) -> tuple[Any, Any]:
+    """Return (lon, lat) of the first Point in a GeoJSON geometry."""
+    if not isinstance(geometry, dict):
+        return None, None
+    if geometry.get("type") == "Point":
+        return _point_coords(geometry.get("coordinates"))
+    if geometry.get("type") == "GeometryCollection":
+        for member in geometry.get("geometries") or []:
+            lon, lat = _first_point(member)
+            if lat is not None:
+                return lon, lat
+    return None, None
+
+
+def _ring_centroid(ring: list[tuple[float, float]]) -> tuple[float, float]:
+    """Vertex average of a (lat, lon) ring; good enough to place a map pin."""
+    return (
+        sum(p[0] for p in ring) / len(ring),
+        sum(p[1] for p in ring) / len(ring),
+    )
+
+
+def _geo_source_polygons(item: dict) -> list[list[tuple[float, float]]]:
+    """Collect warning-area polygons from an EmergencyWA geo-source collection."""
+    geo_source = item.get("geo-source")
+    if not isinstance(geo_source, dict):
+        return []
+    polygons: list[list[tuple[float, float]]] = []
+    for feature in geo_source.get("features") or []:
+        if isinstance(feature, dict):
+            polygons.extend(_extract_polygons(feature.get("geometry")))
+    return polygons[:MAX_POLYGON_RINGS]
 
 
 def _point_coords(coords: Any) -> tuple[Any, Any]:
@@ -173,21 +258,59 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
         try:
             result = await self._fetch_data()
-            # Reset backoff on success
-            if self._consecutive_failures > 0:
-                self._consecutive_failures = 0
-                self.update_interval = timedelta(seconds=self._base_update_seconds)
-                _LOGGER.info("Feed recovered, reset update interval to %s seconds", self._base_update_seconds)
-            return result
         except (aiohttp.ClientError, UpdateFailed) as exc:
-            self._consecutive_failures += 1
-            self._apply_backoff()
+            self._record_failure(exc)
             raise UpdateFailed(f"Error fetching {self._state} incidents: {exc}") from exc
         except Exception as exc:
-            self._consecutive_failures += 1
-            self._apply_backoff()
+            self._record_failure(exc)
             _LOGGER.error("Unexpected error fetching %s incidents: %s", self._state, exc)
             raise UpdateFailed(f"Unexpected error: {exc}") from exc
+
+        # Reset backoff on success
+        if self._consecutive_failures > 0:
+            self._consecutive_failures = 0
+            self.update_interval = timedelta(seconds=self._base_update_seconds)
+            _LOGGER.info("Feed recovered, reset update interval to %s seconds", self._base_update_seconds)
+        ir.async_delete_issue(self.hass, DOMAIN, self.feed_issue_id)
+        if result.get("fallback_source"):
+            ir.async_create_issue(
+                self.hass, DOMAIN, self.fallback_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="sa_map_fallback",
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, self.fallback_issue_id)
+        return result
+
+    @property
+    def feed_issue_id(self) -> str:
+        return f"feed_unavailable_{self._state.lower()}"
+
+    @property
+    def fallback_issue_id(self) -> str:
+        return f"map_fallback_{self._state.lower()}"
+
+    def _record_failure(self, exc: Exception) -> None:
+        """Back off, and raise a Repairs issue once a feed has stayed down."""
+        self._consecutive_failures += 1
+        self._apply_backoff()
+        # States with no feed at all get their own issue at setup instead.
+        if (
+            self._consecutive_failures >= FEED_ISSUE_FAILURE_THRESHOLD
+            and self._state not in UNAVAILABLE_STATES
+        ):
+            ir.async_create_issue(
+                self.hass, DOMAIN, self.feed_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="feed_unavailable",
+                translation_placeholders={
+                    "state": self._state,
+                    "failures": str(self._consecutive_failures),
+                    "error": str(exc)[:200],
+                },
+            )
 
     def _apply_backoff(self) -> None:
         """Apply exponential backoff after failures."""
@@ -207,7 +330,42 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         for incident in result.get("incidents", []):
             incident[ATTR_LATITUDE] = _to_float(incident.get(ATTR_LATITUDE))
             incident[ATTR_LONGITUDE] = _to_float(incident.get(ATTR_LONGITUDE))
+        self._add_distances(result.get("incidents", []))
         return result
+
+    def _home(self) -> tuple[float, float] | None:
+        """Return HA's home location, if configured."""
+        config = getattr(self.hass, "config", None)
+        lat = _to_float(getattr(config, "latitude", None))
+        lon = _to_float(getattr(config, "longitude", None))
+        if lat is None or lon is None:
+            return None
+        return lat, lon
+
+    def _add_distances(self, incidents: list[dict[str, Any]]) -> None:
+        """Add distance/direction from home and sort nearest first.
+
+        Sorting means the sensors' truncated incident lists keep the closest ones.
+        """
+        home = self._home()
+        for incident in incidents:
+            lat, lon = incident.get(ATTR_LATITUDE), incident.get(ATTR_LONGITUDE)
+            distance = bearing = None
+            in_area = False
+            if home is not None:
+                distance, in_area = distance_to_incident(
+                    home[0], home[1], lat, lon, incident.get(ATTR_POLYGONS)
+                )
+                if lat is not None and lon is not None and not in_area and distance:
+                    bearing = round(initial_bearing(home[0], home[1], lat, lon))
+            incident[ATTR_DISTANCE_KM] = distance
+            incident[ATTR_BEARING] = bearing
+            incident[ATTR_DIRECTION] = compass_direction(bearing) if bearing is not None else None
+            incident[ATTR_HOME_IN_AREA] = in_area
+        if home is not None:
+            incidents.sort(
+                key=lambda i: i[ATTR_DISTANCE_KM] if i[ATTR_DISTANCE_KM] is not None else float("inf")
+            )
 
     async def _fetch_feed_data(self) -> dict[str, Any]:
         """Fetch a state feed; use the official CFS map when SA CRIIMSON fails."""
@@ -228,6 +386,8 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         """Fetch and parse the configured state feed."""
         if self._state == "TAS":
             return await self._fetch_tas_georss()
+        if self._state == "ACT":
+            return await self._fetch_act_georss()
 
         url = self._feed_config.get("json")
         if not url:
@@ -250,13 +410,29 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             elif self._state == "NSW":
                 return await self._parse_nsw_data(resp)
             elif self._state == "VIC":
-                return await self._parse_vic_data(resp)
+                result = await self._parse_vic_data(resp)
             elif self._state == "QLD":
                 return await self._parse_qld_data(resp)
             elif self._state == "WA":
                 return await self._parse_wa_data(resp)
             else:
                 raise UpdateFailed(f"No parser configured for {self._state}")
+
+        # VIC: warnings (the highest-severity items) come from a second feed.
+        # Like WA, a failed warnings fetch fails the update rather than
+        # presenting incidents alone as a trustworthy picture.
+        warnings_url = self._feed_config.get("warnings")
+        if warnings_url:
+            async with self._session.get(warnings_url, timeout=30) as warn_resp:
+                if warn_resp.status != 200:
+                    raise UpdateFailed(f"VIC warnings returned HTTP {warn_resp.status}")
+                if "json" not in warn_resp.content_type.lower():
+                    raise UpdateFailed(
+                        f"VIC warnings returned {warn_resp.content_type}, expected JSON"
+                    )
+                warn_data = await warn_resp.json(content_type=None)
+            result["incidents"].extend(self._parse_vic_warnings(warn_data))
+        return result
 
     async def _fetch_sa_map_data(self) -> dict[str, Any]:
         """Read the public incident layer used by the official CFS map.
@@ -426,6 +602,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_AGENCY: "NSW RFS",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
+                ATTR_POLYGONS: _extract_polygons(geom),
             })
 
         return {"incidents": incidents}
@@ -482,6 +659,55 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
         return {"incidents": incidents}
 
+    def _parse_vic_warnings(self, data: Any) -> list[dict[str, Any]]:
+        """Parse VicEmergency public warnings (osom GeoJSON) into incidents.
+
+        The same feed also carries incidents, burn areas and earthquakes; only
+        warnings are taken, since incidents already come from the main feed.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("features"), list):
+            raise UpdateFailed("VIC warnings response is not a GeoJSON feature collection")
+
+        warnings = []
+        for feature in data["features"]:
+            if not isinstance(feature, dict):
+                continue
+            props = feature.get("properties") or {}
+            if props.get("feedType") != "warning":
+                continue
+            geom = feature.get("geometry") or {}
+            polygons = _extract_polygons(geom)
+            lon, lat = _first_point(geom)
+            if lat is None and polygons:
+                lat, lon = _ring_centroid(polygons[0])
+
+            cap = props.get("cap") if isinstance(props.get("cap"), dict) else {}
+            level = props.get("category1") or props.get("name") or props.get("sourceTitle")
+            identifier = props.get("id") or props.get("sourceId")
+            updated = props.get("updated") or props.get("created")
+            incident_dt = self._parse_dt(updated)
+
+            warnings.append({
+                # Prefixed so a warning id can never collide with an incident number.
+                ATTR_INCIDENT_NO: f"warning-{identifier}" if identifier is not None else None,
+                ATTR_TYPE: cap.get("event") or props.get("category2") or "Warning",
+                ATTR_STATUS: props.get("action") or props.get("status"),
+                ATTR_LEVEL: level,
+                ATTR_SEVERITY: _norm_severity(level, None),
+                ATTR_LOCATION_NAME: props.get("location"),
+                ATTR_REGION: None,
+                ATTR_DATE: updated,
+                ATTR_TIME: None,
+                ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
+                ATTR_MESSAGE: props.get("webHeadline"),
+                ATTR_MESSAGE_LINK: props.get("url"),
+                ATTR_AGENCY: cap.get("senderName") or props.get("sourceOrg") or "VIC EMV",
+                ATTR_LATITUDE: lat,
+                ATTR_LONGITUDE: lon,
+                ATTR_POLYGONS: polygons,
+            })
+        return warnings
+
     async def _parse_qld_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
         """Parse QLD QFES JSON format (QFDWarnings GeoJSON)."""
         # content_type=None skips validation - QLD S3 returns binary/octet-stream
@@ -502,18 +728,13 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
 
             lat = lon = None
             coords = geom.get("coordinates")
+            polygons = _extract_polygons(geom)
             if coords:
                 if geom.get("type") == "Point":
                     lon, lat = _point_coords(coords)
-                elif geom.get("type") == "Polygon" and coords:
-                    # For polygons, try to get centroid from first ring
-                    try:
-                        ring = coords[0]
-                        if ring:
-                            lon = sum(p[0] for p in ring) / len(ring)
-                            lat = sum(p[1] for p in ring) / len(ring)
-                    except (ValueError, TypeError, IndexError):
-                        pass
+                elif polygons:
+                    # Pin the map marker at the warning area's centroid
+                    lat, lon = _ring_centroid(polygons[0])
                 elif isinstance(coords, list) and len(coords) >= 2:
                     # Might be raw coordinates
                     try:
@@ -566,6 +787,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_AGENCY: "QLD QFD",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
+                ATTR_POLYGONS: polygons,
             })
 
         return {"incidents": incidents}
@@ -632,6 +854,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_AGENCY: "WA DFES",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
+                ATTR_POLYGONS: _geo_source_polygons(item),
             })
 
         # Warnings include the highest-severity alerts; a partial response must
@@ -719,6 +942,7 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_AGENCY: "WA DFES",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
+                ATTR_POLYGONS: _geo_source_polygons(item),
             })
 
         return incidents
@@ -820,6 +1044,85 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
                 ATTR_MESSAGE_LINK: link,
                 ATTR_AGENCY: "TAS TFS",
+                ATTR_LATITUDE: lat,
+                ATTR_LONGITUDE: lon,
+            })
+
+        return {"incidents": incidents}
+
+    async def _fetch_act_georss(self) -> dict[str, Any]:
+        """Fetch the ACT ESA current incidents GeoRSS feed."""
+        url = self._feed_config.get("georss")
+        async with self._session.get(url, timeout=30) as resp:
+            if resp.status != 200:
+                raise UpdateFailed(f"ACT incidents returned HTTP {resp.status}")
+            xml_string = await resp.text()
+        return self._parse_act_georss(xml_string)
+
+    def _parse_act_georss(self, xml_string: str) -> dict[str, Any]:
+        """Parse the ACT ESA current incidents feed (RSS 2.0 + georss:point).
+
+        Items carry type, agency, CAD id and statuses as their own elements,
+        and the update time inside the description text. The feed has no
+        warning levels, so its incidents are all severity "info".
+        """
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError as exc:
+            # A broken document is an outage, not a quiet day with no incidents.
+            raise UpdateFailed(f"ACT incidents returned invalid XML: {exc}") from exc
+        if root.tag != "rss" or root.find("channel") is None:
+            raise UpdateFailed("ACT incidents response is not an RSS feed")
+
+        namespaces = {"georss": "http://www.georss.org/georss"}
+        incidents = []
+        for item in root.find("channel").findall("item"):
+            def text(tag: str) -> str:
+                return (item.findtext(tag) or "").strip()
+
+            description = text("description")
+
+            def description_field(label: str) -> str | None:
+                match = re.search(
+                    rf"{label}:\s*(.*?)\s*(?=(?:Incident|Location|Status|Suburb|Type|Agency|"
+                    rf"Incident Number|Updated|Time of Call):|$)",
+                    description,
+                )
+                return match.group(1).strip() or None if match else None
+
+            lat = lon = None
+            point = item.find("georss:point", namespaces)
+            if point is not None and point.text:
+                parts = point.text.split()
+                if len(parts) >= 2:
+                    lat, lon = _to_float(parts[0]), _to_float(parts[1])
+
+            title = text("title")
+            inc_type = text("type") or description_field("Type")
+            location = description_field("Location") or description_field("Suburb")
+            if not location and " - " in title:
+                location = title.split(" - ", 1)[1].strip()
+            status = text("resourceStatus") or description_field("Status")
+
+            # "06 Oct 2026 17:13:47.65": drop the fractional seconds
+            updated = description_field("Updated")
+            if updated:
+                updated = re.sub(r"(\d{2}:\d{2}:\d{2})\.\d+", r"\1", updated)
+            incident_dt = self._parse_dt(updated)
+
+            incidents.append({
+                ATTR_INCIDENT_NO: text("guid") or text("cadid") or description_field("Incident Number") or title,
+                ATTR_TYPE: inc_type.title() if inc_type else None,
+                ATTR_STATUS: status,
+                ATTR_LEVEL: None,
+                ATTR_SEVERITY: _norm_severity(None, status),
+                ATTR_LOCATION_NAME: location.title() if location else title,
+                ATTR_REGION: description_field("Suburb"),
+                ATTR_DATE: updated,
+                ATTR_TIME: None,
+                ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
+                ATTR_MESSAGE_LINK: "https://esa.act.gov.au/",
+                ATTR_AGENCY: f"ACT {text('agency')}".strip() if text("agency") else "ACT ESA",
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
             })
