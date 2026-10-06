@@ -7,7 +7,12 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryNotReady
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.const import Platform
-from homeassistant.helpers import config_validation as cv, device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
 
 from .const import (
     DOMAIN,
@@ -23,12 +28,13 @@ from .const import (
     MAX_UPDATE_INTERVAL,
     STATE_DEVICE_INFO,
     SUPPORTED_STATES,
+    UNAVAILABLE_STATES,
     FEED_URLS,
 )
 from .coordinator import IncidentDataCoordinator
 from .cap_coordinator import CFSCAPDataCoordinator
 
-PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR]
+PLATFORMS: list[str] = [Platform.GEO_LOCATION, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -99,6 +105,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Migrate from old single-state config
         old_state = entry.options.get(CONF_STATE) or entry.data.get(CONF_STATE, DEFAULT_STATE)
         states = [old_state] if old_state else DEFAULT_STATES
+
+    _sync_state_issues(hass, states)
 
     # Create coordinators for each selected state
     incident_coordinators = {}
@@ -260,3 +268,20 @@ def _remove_state_devices_global(
             removed_count,
         )
         device_registry.async_remove_device(device.id)
+
+
+def _sync_state_issues(hass: HomeAssistant, states: list[str]) -> None:
+    """Flag selected states that have no feed; clear issues for deselected states."""
+    for state_code in SUPPORTED_STATES:
+        code = state_code.lower()
+        if state_code not in states:
+            for issue_id in (f"feed_unavailable_{code}", f"map_fallback_{code}", f"no_feed_{code}"):
+                ir.async_delete_issue(hass, DOMAIN, issue_id)
+        elif state_code in UNAVAILABLE_STATES:
+            ir.async_create_issue(
+                hass, DOMAIN, f"no_feed_{code}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="state_without_feed",
+                translation_placeholders={"state": state_code},
+            )

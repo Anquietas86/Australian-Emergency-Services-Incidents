@@ -4,14 +4,18 @@
     "step": {
       "user": {
         "title": "Australian Emergency Services",
-        "description": "Configure emergency incident tracking for your state.",
+        "description": "Configure emergency incident tracking for your state or territory.",
         "data": {
           "states": "States",
           "state": "State",
           "update_interval": "Update interval (seconds)",
           "remove_stale": "Remove stale incidents from HA",
           "expose_to_assistants": "Expose to assistants",
-          "zones": "Monitor zones (optional)"
+          "zones": "Monitor zones (optional)",
+          "radius": "Map entity radius (km)",
+          "alert_radius": "Nearby emergency radius (km)",
+          "alert_min_severity": "Nearby emergency minimum severity",
+          "zone_buffer": "Zone buffer (km)"
         },
         "data_description": {
           "states": "Select which Australian states to monitor for emergency incidents",
@@ -19,7 +23,11 @@
           "update_interval": "How often to poll for new incidents, in seconds (60 to 86400, default 600)",
           "remove_stale": "Remove incident entities when they are no longer active, instead of marking them unavailable",
           "expose_to_assistants": "Expose newly created incident entities to Assist and Google Assistant",
-          "zones": "Select Home Assistant zones to filter incidents. Incidents will show which zones they fall within."
+          "zones": "Select Home Assistant zones to filter incidents. Incidents will show which zones they fall within.",
+          "radius": "Only create map entities for incidents within this distance of home. 0 keeps every incident in the selected states. Sensors always count the whole state.",
+          "alert_radius": "The Emergency nearby sensor turns on for incidents within this distance of home, or when home is inside a warning area.",
+          "alert_min_severity": "Lowest severity that turns the Emergency nearby sensor on. ACT incidents carry no warning level and only count at Info.",
+          "zone_buffer": "Distance added to each monitored zone's own radius when deciding whether an incident is in that zone."
         }
       }
     },
@@ -37,7 +45,11 @@
           "update_interval": "Update interval (seconds)",
           "remove_stale": "Remove stale incidents from HA",
           "expose_to_assistants": "Expose to assistants",
-          "zones": "Monitor zones"
+          "zones": "Monitor zones",
+          "radius": "Map entity radius (km)",
+          "alert_radius": "Nearby emergency radius (km)",
+          "alert_min_severity": "Nearby emergency minimum severity",
+          "zone_buffer": "Zone buffer (km)"
         },
         "data_description": {
           "states": "Select which Australian states to monitor. Removing a state will also remove its device and entities.",
@@ -45,7 +57,11 @@
           "update_interval": "How often to poll for new incidents, in seconds (60 to 86400, default 600)",
           "remove_stale": "Remove incident entities when no longer active",
           "expose_to_assistants": "Expose newly created incident entities to Assist and Google Assistant",
-          "zones": "Incidents will show which of these zones they fall within"
+          "zones": "Incidents will show which of these zones they fall within",
+          "radius": "Only create map entities for incidents within this distance of home. 0 keeps every incident in the selected states. Sensors always count the whole state.",
+          "alert_radius": "The Emergency nearby sensor turns on for incidents within this distance of home, or when home is inside a warning area.",
+          "alert_min_severity": "Lowest severity that turns the Emergency nearby sensor on. ACT incidents carry no warning level and only count at Info.",
+          "zone_buffer": "Distance added to each monitored zone's own radius when deciding whether an incident is in that zone."
         }
       }
     }
@@ -61,9 +77,51 @@
       "fields": {
         "state": {
           "name": "State",
-          "description": "The state code to remove (SA, NSW, VIC, QLD, TAS, or WA)."
+          "description": "The state code to remove (SA, NSW, VIC, QLD, TAS, WA or ACT)."
         }
       }
+    }
+  },
+  "selector": {
+    "severity": {
+      "options": {
+        "info": "Info (any incident)",
+        "advice": "Advice",
+        "watch_and_act": "Watch and act",
+        "emergency_warning": "Emergency warning"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "emergency_nearby": {
+        "name": "Emergency nearby"
+      }
+    },
+    "sensor": {
+      "active_incidents": {
+        "name": "Active incidents"
+      },
+      "high_severity_incidents": {
+        "name": "High severity incidents"
+      },
+      "incident_summary": {
+        "name": "Incident summary"
+      }
+    }
+  },
+  "issues": {
+    "feed_unavailable": {
+      "title": "{state} emergency feed is unavailable",
+      "description": "The {state} incident feed has failed {failures} updates in a row, so its sensors and map entities are unavailable. Treat this as unknown, not as no incidents, and check your state's emergency website directly. The integration keeps retrying and clears this message when the feed recovers.\n\nLast error: {error}"
+    },
+    "sa_map_fallback": {
+      "title": "SA incidents are using the CFS map fallback",
+      "description": "The SA CRIIMSON feed is unavailable, so SA incidents come from the public CFS map layer. That layer can include old records and does not provide CAP warnings. Do not rely on it as an all clear. This message clears when CRIIMSON recovers."
+    },
+    "state_without_feed": {
+      "title": "{state} has no incident feed",
+      "description": "{state} no longer publishes a machine-readable incident feed, so its sensors stay unavailable. Remove {state} in the integration's options to stop this message."
     }
   }
 }

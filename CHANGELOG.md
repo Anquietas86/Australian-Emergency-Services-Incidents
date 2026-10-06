@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0
+
+- Add distance from home to every incident: `distance_km`, `bearing` and `direction` (8-point compass) in attributes and lifecycle events, and `home_in_area` when home is inside a warning area. Incident lists are sorted nearest first.
+- Add an **Emergency nearby** binary sensor (radius and minimum severity are configurable). It is unavailable, not off, when a feed is down and nothing matched.
+- Add an optional **map entity radius**: only incidents within it get geo-location entities and events. Sensors still count the whole state.
+- Add a **zone buffer** so zones match incidents within their radius plus a distance; a zone inside a warning area always matches.
+- Keep warning-area polygons from NSW, QLD, VIC and WA (and SA CAP alerts) and use them for distance and zone checks. Polygons stay internal and never reach attributes, events or the recorder.
+- Add **ACT** (ESA current incidents GeoRSS) and **VIC public warnings** (VicEmergency map feed). A failed VIC warnings fetch fails the VIC update, like WA, rather than showing incidents alone.
+- Raise **Repairs** issues when a feed fails 3 updates in a row, when SA is on the CFS map fallback, and when a selected state has no feed (TAS). They clear on recovery or when the state is removed.
+- Entity names now come from translations. Sensor friendly names drop the duplicated state code (for example "South Australia Active incidents"); entity IDs are unchanged.
+- Add CI: pytest, hassfest and HACS validation.
+
 ## v0.3.5
 
 Fixes from a code audit, verified against Home Assistant 2026.2.3.

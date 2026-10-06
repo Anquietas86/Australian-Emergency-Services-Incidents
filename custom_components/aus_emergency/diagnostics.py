@@ -131,6 +131,7 @@ async def async_get_config_entry_diagnostics(
                     inc.get("latitude") is not None and
                     inc.get("longitude") is not None
                 ),
+                "has_warning_area": bool(inc.get("_polygons")),
             }
             for inc in all_incidents
         ],

@@ -15,16 +15,20 @@ from homeassistant.util.dt import now as dt_now
 from homeassistant.util import slugify
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .utils import haversine_distance
+from .utils import compass_direction, distance_to_incident, initial_bearing, public_incident
 from .const import (
     DOMAIN,
     CONF_REMOVE_STALE,
     CONF_EXPOSE_TO_ASSISTANTS,
     CONF_ZONES,
+    CONF_ZONE_BUFFER,
+    CONF_RADIUS,
     CONF_STATE,
     CONF_STATES,
     DEFAULT_REMOVE_STALE,
     DEFAULT_EXPOSE_TO_ASSISTANTS,
+    DEFAULT_ZONE_BUFFER,
+    DEFAULT_RADIUS,
     DEFAULT_STATE,
     DEFAULT_STATES,
     ATTR_INCIDENT_NO,
@@ -41,6 +45,11 @@ from .const import (
     ATTR_LONGITUDE,
     ATTR_DURATION_MINUTES,
     ATTR_IN_ZONE,
+    ATTR_DISTANCE_KM,
+    ATTR_BEARING,
+    ATTR_DIRECTION,
+    ATTR_HOME_IN_AREA,
+    ATTR_POLYGONS,
     EVENT_CREATED,
     EVENT_UPDATED,
     EVENT_REMOVED,
@@ -112,11 +121,18 @@ def _is_registered(hass: HomeAssistant, unique_id: str) -> bool:
     return er.async_get(hass).async_get_entity_id("geo_location", DOMAIN, unique_id) is not None
 
 
-def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zone_entity_id: str) -> bool:
-    """Check if a point is within a Home Assistant zone."""
-    if lat is None or lon is None:
-        return False
+def _point_in_zone(
+    hass: HomeAssistant,
+    lat: float | None,
+    lon: float | None,
+    zone_entity_id: str,
+    buffer_km: float = 0,
+    polygons: list | None = None,
+) -> bool:
+    """Check if an incident is within a zone's radius plus a buffer.
 
+    With warning-area polygons, a zone whose centre is inside the area matches.
+    """
     zone_state = hass.states.get(zone_entity_id)
     if not zone_state:
         return False
@@ -124,30 +140,48 @@ def _point_in_zone(hass: HomeAssistant, lat: float | None, lon: float | None, zo
     try:
         zone_lat = float(zone_state.attributes.get("latitude", 0))
         zone_lon = float(zone_state.attributes.get("longitude", 0))
-        zone_radius = float(zone_state.attributes.get("radius", 0))  # meters
+        zone_radius_km = float(zone_state.attributes.get("radius", 0)) / 1000  # metres
+        buffer_km = float(buffer_km or 0)
     except (ValueError, TypeError):
         return False
 
-    if zone_radius <= 0:
+    reach_km = zone_radius_km + max(buffer_km, 0)
+    if reach_km <= 0:
         return False
 
-    distance = haversine_distance(lat, lon, zone_lat, zone_lon)
-    return distance <= zone_radius
+    distance, inside = distance_to_incident(zone_lat, zone_lon, lat, lon, polygons)
+    return inside or (distance is not None and distance <= reach_km)
 
 
-def _get_zones_for_point(hass: HomeAssistant, lat: float | None, lon: float | None, zone_ids: list[str]) -> list[str]:
-    """Get list of zone names that contain the given point."""
-    if not zone_ids or lat is None or lon is None:
+def _get_zones_for_point(
+    hass: HomeAssistant,
+    lat: float | None,
+    lon: float | None,
+    zone_ids: list[str],
+    buffer_km: float = 0,
+    polygons: list | None = None,
+) -> list[str]:
+    """Get list of zone names that contain the given incident."""
+    if not zone_ids or ((lat is None or lon is None) and not polygons):
         return []
 
     matching_zones = []
     for zone_id in zone_ids:
-        if _point_in_zone(hass, lat, lon, zone_id):
+        if _point_in_zone(hass, lat, lon, zone_id, buffer_km, polygons):
             zone_state = hass.states.get(zone_id)
             if zone_state:
                 matching_zones.append(zone_state.attributes.get("friendly_name", zone_id))
 
     return matching_zones
+
+
+def _within_radius(distance_km: float | None, radius_km: float) -> bool:
+    """Return True if an incident passes the map-entity radius filter."""
+    if not radius_km:
+        return True
+    # Without a location there is nothing to put on the map, and no way to
+    # tell whether it is nearby; it still counts in the state sensors.
+    return distance_km is not None and distance_km <= radius_km
 
 
 async def async_setup_entry(
@@ -162,6 +196,12 @@ async def async_setup_entry(
     monitored_zones = entry.options.get(
         CONF_ZONES, entry.data.get(CONF_ZONES, [])
     )
+    zone_buffer = entry.options.get(
+        CONF_ZONE_BUFFER, entry.data.get(CONF_ZONE_BUFFER, DEFAULT_ZONE_BUFFER)
+    ) or 0
+    radius = entry.options.get(
+        CONF_RADIUS, entry.data.get(CONF_RADIUS, DEFAULT_RADIUS)
+    ) or 0
 
     entry_data = hass.data[DOMAIN][entry.entry_id]
     incident_coordinators = entry_data.get("incident_coordinators", {})
@@ -182,13 +222,15 @@ async def async_setup_entry(
         if incident_coordinator:
             _setup_incident_entities(
                 hass, entry, async_add_entities,
-                incident_coordinator, device_info, monitored_zones, remove_stale, expose_to_assistants, state
+                incident_coordinator, device_info, monitored_zones, remove_stale, expose_to_assistants, state,
+                zone_buffer=zone_buffer, radius=radius,
             )
 
         if cap_coordinator:
             _setup_cap_entities(
                 hass, entry, async_add_entities,
-                cap_coordinator, device_info, monitored_zones, expose_to_assistants, state
+                cap_coordinator, device_info, monitored_zones, expose_to_assistants, state,
+                zone_buffer=zone_buffer, radius=radius,
             )
 
 
@@ -233,6 +275,9 @@ def _setup_incident_entities(
     remove_stale: bool,
     expose_to_assistants: bool,
     state: str,
+    *,
+    zone_buffer: float = 0,
+    radius: float = 0,
 ):
     """Set up incident geo_location entities for a single state."""
     # Use state prefix in entity tracking to avoid collisions
@@ -246,7 +291,11 @@ def _setup_incident_entities(
             return
 
         data = incident_coordinator.data or {}
-        incidents = data.get("incidents", [])
+        # Incidents outside the radius are handled exactly like ended ones.
+        incidents = [
+            item for item in data.get("incidents", [])
+            if _within_radius(item.get(ATTR_DISTANCE_KM), radius)
+        ]
         seen_ids: set[str] = set()
 
         for item in incidents:
@@ -271,6 +320,7 @@ def _setup_incident_entities(
                     device_info=device_info,
                     monitored_zones=monitored_zones,
                     state_code=state,
+                    zone_buffer=zone_buffer,
                 )
                 # An incident registered on an earlier run is not new: a restart
                 # or reload must not re-announce every active incident.
@@ -323,6 +373,9 @@ def _setup_cap_entities(
     monitored_zones: list[str],
     expose_to_assistants: bool,
     state: str,
+    *,
+    zone_buffer: float = 0,
+    radius: float = 0,
 ):
     """Set up CAP alert geo_location entities for a single state."""
     cap_entities: dict[str, CAPAlertGeolocation] = {}
@@ -341,6 +394,8 @@ def _setup_cap_entities(
             alert_id = alert.get("id")
             if not alert_id:
                 continue
+            if radius and not _within_radius(_cap_alert_distance(hass, alert), radius):
+                continue
 
             # Prefix with state to ensure uniqueness
             full_id = f"{state}_{alert_id}"
@@ -357,6 +412,7 @@ def _setup_cap_entities(
                     device_info=device_info,
                     monitored_zones=monitored_zones,
                     state_code=state,
+                    zone_buffer=zone_buffer,
                 )
                 is_new = not _is_registered(hass, ent._attr_unique_id)
                 ent.expose_on_add = expose_to_assistants and is_new
@@ -404,6 +460,76 @@ def _parse_cap_points(text: str) -> list[tuple[float, float]]:
     return points
 
 
+def _cap_alert_polygons(alert: dict) -> list[list[tuple[float, float]]]:
+    """Return the alert's area polygons as (lat, lon) rings."""
+    rings = []
+    for area in alert.get("areas") or []:
+        for poly_str in area.get("polygon", []):
+            ring = _parse_cap_points(poly_str)
+            if len(ring) >= 3:
+                rings.append(ring)
+    return rings
+
+
+def _cap_alert_centroid(alert: dict | None) -> tuple[float, float] | None:
+    """Calculate the centroid of a CAP alert's area."""
+    if not alert:
+        return None
+
+    all_lats, all_lons = [], []
+
+    for area in alert.get("areas") or []:
+        # Handle polygons
+        for poly_str in area.get("polygon", []):
+            for lat, lon in _parse_cap_points(poly_str):
+                all_lats.append(lat)
+                all_lons.append(lon)
+
+        # Handle circles ("lat,lon radius"; use the center point)
+        for circle_str in area.get("circle", []):
+            center = _parse_cap_points(circle_str.split()[0]) if circle_str.split() else []
+            for lat, lon in center:
+                all_lats.append(lat)
+                all_lons.append(lon)
+
+    if all_lats and all_lons:
+        return statistics.mean(all_lats), statistics.mean(all_lons)
+
+    return None
+
+
+def _home_distance(
+    hass: HomeAssistant,
+    lat: float | None,
+    lon: float | None,
+    polygons: list | None = None,
+) -> tuple[float | None, bool]:
+    """Return (km from home, home inside the area) for a location."""
+    config = getattr(hass, "config", None)
+    home_lat = getattr(config, "latitude", None)
+    home_lon = getattr(config, "longitude", None)
+    if home_lat is None or home_lon is None:
+        return None, False
+    return distance_to_incident(home_lat, home_lon, lat, lon, polygons)
+
+
+def _cap_alert_distance(hass: HomeAssistant, alert: dict) -> float | None:
+    centroid = _cap_alert_centroid(alert)
+    lat, lon = centroid if centroid else (None, None)
+    return _home_distance(hass, lat, lon, _cap_alert_polygons(alert))[0]
+
+
+def _direction_attrs(hass: HomeAssistant, lat: float | None, lon: float | None, in_area: bool) -> dict:
+    """Bearing and compass direction from home, or None when not meaningful."""
+    config = getattr(hass, "config", None)
+    home_lat = getattr(config, "latitude", None)
+    home_lon = getattr(config, "longitude", None)
+    if in_area or None in (lat, lon, home_lat, home_lon):
+        return {ATTR_BEARING: None, ATTR_DIRECTION: None}
+    bearing = round(initial_bearing(home_lat, home_lon, lat, lon))
+    return {ATTR_BEARING: bearing, ATTR_DIRECTION: compass_direction(bearing)}
+
+
 class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationEvent):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert"
@@ -419,6 +545,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         device_info: dict | None = None,
         monitored_zones: list[str] | None = None,
         state_code: str = "",
+        zone_buffer: float = 0,
     ) -> None:
         super().__init__(coordinator)
         self.hass = hass
@@ -426,6 +553,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         self._alert_id = alert_id
         self._state_code = state_code
         self._monitored_zones = monitored_zones or []
+        self._zone_buffer = zone_buffer
         self._first_seen = dt_now()
         # Use a truncated hash for the unique ID to keep it manageable
         self._alert_hash = hashlib.sha1(f"{state_code}_{alert_id}".encode("utf-8")).hexdigest()[:12]
@@ -453,6 +581,7 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
             "urgency": alert.get("urgency") if alert else None,
             "latitude": self.latitude,
             "longitude": self.longitude,
+            **self._location_attrs(),
             "first_seen": self._first_seen.isoformat(),
             "changed_at": dt_now().isoformat(),
         }
@@ -469,30 +598,12 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
     @property
     def _centroid(self) -> tuple[float, float] | None:
         """Calculate the centroid of the alert area."""
+        return _cap_alert_centroid(self._alert_data)
+
+    def _home_distance(self) -> tuple[float | None, bool]:
         alert = self._alert_data
-        if not alert:
-            return None
-
-        all_lats, all_lons = [], []
-
-        for area in alert.get("areas", []):
-            # Handle polygons
-            for poly_str in area.get("polygon", []):
-                for lat, lon in _parse_cap_points(poly_str):
-                    all_lats.append(lat)
-                    all_lons.append(lon)
-
-            # Handle circles ("lat,lon radius"; use the center point)
-            for circle_str in area.get("circle", []):
-                center = _parse_cap_points(circle_str.split()[0]) if circle_str.split() else []
-                for lat, lon in center:
-                    all_lats.append(lat)
-                    all_lons.append(lon)
-
-        if all_lats and all_lons:
-            return statistics.mean(all_lats), statistics.mean(all_lons)
-
-        return None
+        polygons = _cap_alert_polygons(alert) if alert else []
+        return _home_distance(self.hass, self.latitude, self.longitude, polygons)
 
     @property
     def name(self) -> str:
@@ -528,14 +639,26 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
         attrs[ATTR_DURATION_MINUTES] = round(duration, 1)
         attrs["first_seen"] = self._first_seen.isoformat()
 
+        attrs.update(self._location_attrs())
+
         # Add zone membership
         if self._monitored_zones:
+            alert = self._alert_data
             matching = _get_zones_for_point(
-                self.hass, self.latitude, self.longitude, self._monitored_zones
+                self.hass, self.latitude, self.longitude, self._monitored_zones,
+                self._zone_buffer, _cap_alert_polygons(alert) if alert else None,
             )
             attrs[ATTR_IN_ZONE] = matching
 
         return attrs
+
+    def _location_attrs(self) -> dict:
+        distance, in_area = self._home_distance()
+        return {
+            ATTR_DISTANCE_KM: distance,
+            ATTR_HOME_IN_AREA: in_area,
+            **_direction_attrs(self.hass, self.latitude, self.longitude, in_area),
+        }
 
     @property
     def available(self) -> bool:
@@ -543,18 +666,8 @@ class CAPAlertGeolocation(CoordinatorEntity[CFSCAPDataCoordinator], GeolocationE
 
     @property
     def distance(self) -> float | None:
-        """Return distance from home to this alert in km."""
-        if self.latitude is None or self.longitude is None:
-            return None
-
-        home_lat = self.hass.config.latitude
-        home_lon = self.hass.config.longitude
-        if home_lat is None or home_lon is None:
-            return None
-
-        return round(haversine_distance(
-            home_lat, home_lon, self.latitude, self.longitude, radius=6371.0
-        ), 1)
+        """Return distance from home to this alert in km (0 inside its area)."""
+        return self._home_distance()[0]
 
 
 class IncidentEntity(GeolocationEvent):
@@ -572,9 +685,12 @@ class IncidentEntity(GeolocationEvent):
         device_info: dict | None = None,
         monitored_zones: list[str] | None = None,
         state_code: str = "",
+        zone_buffer: float = 0,
     ) -> None:
         self.hass = hass
         self._source = source
+        self._zone_buffer = zone_buffer
+        self._polygons: list = []
         self._available = True
         self.ended = False
         self._attrs: Dict[str, Any] = {}
@@ -624,7 +740,8 @@ class IncidentEntity(GeolocationEvent):
         self._latitude = item.get(ATTR_LATITUDE)
         self._longitude = item.get(ATTR_LONGITUDE)
 
-        self._attrs = item.copy()
+        self._polygons = item.get(ATTR_POLYGONS) or []
+        self._attrs = public_incident(item)
 
         if self._latitude is not None and self._longitude is not None:
             self._attrs[
@@ -668,7 +785,9 @@ class IncidentEntity(GeolocationEvent):
         # Check zone membership
         zones = monitored_zones or self._monitored_zones
         if zones:
-            matching = _get_zones_for_point(self.hass, self._latitude, self._longitude, zones)
+            matching = _get_zones_for_point(
+                self.hass, self._latitude, self._longitude, zones, self._zone_buffer, self._polygons
+            )
             self._attrs[ATTR_IN_ZONE] = matching
 
         return changed
@@ -695,6 +814,10 @@ class IncidentEntity(GeolocationEvent):
             "last_changed": self._last_changed.isoformat(),
             ATTR_DURATION_MINUTES: self._attrs.get(ATTR_DURATION_MINUTES),
             ATTR_IN_ZONE: self._attrs.get(ATTR_IN_ZONE, []),
+            ATTR_DISTANCE_KM: self._attrs.get(ATTR_DISTANCE_KM),
+            ATTR_BEARING: self._attrs.get(ATTR_BEARING),
+            ATTR_DIRECTION: self._attrs.get(ATTR_DIRECTION),
+            ATTR_HOME_IN_AREA: self._attrs.get(ATTR_HOME_IN_AREA, False),
         }
         self.hass.bus.async_fire(event_type, payload)
 
@@ -724,18 +847,10 @@ class IncidentEntity(GeolocationEvent):
 
     @property
     def distance(self) -> float | None:
-        """Return distance from home to this incident in km."""
-        if self._latitude is None or self._longitude is None:
-            return None
-
-        home_lat = self.hass.config.latitude
-        home_lon = self.hass.config.longitude
-        if home_lat is None or home_lon is None:
-            return None
-
-        return round(haversine_distance(
-            home_lat, home_lon, self._latitude, self._longitude, radius=6371.0
-        ), 1)
+        """Return distance from home to this incident in km (0 inside its warning area)."""
+        if ATTR_DISTANCE_KM in self._attrs:
+            return self._attrs[ATTR_DISTANCE_KM]
+        return _home_distance(self.hass, self._latitude, self._longitude, self._polygons)[0]
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

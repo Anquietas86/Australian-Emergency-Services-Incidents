@@ -28,6 +28,7 @@ from .const import (
     MAX_INCIDENTS_IN_ATTRIBUTES,
 )
 from .coordinator import IncidentDataCoordinator
+from .utils import public_incident
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ async def async_setup_entry(
 class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert"
+    _attr_translation_key = "active_incidents"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     # The incident list is large and already available from the geo_location entities.
     _unrecorded_attributes = frozenset({"incidents"})
@@ -79,7 +81,6 @@ class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
         super().__init__(coordinator)
         self._entry = entry
         self._state_code = state
-        self._attr_name = f"{state} Active incidents" if state else "Active incidents"
         self._attr_unique_id = f"{entry.entry_id}_{state}_active_incidents"
         self._attr_device_info = device_info
         # Use standardized entity_id pattern
@@ -112,7 +113,7 @@ class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
 
         # Truncate incidents to avoid exceeding 16KB attribute limit
         truncated = len(incidents) > MAX_INCIDENTS_IN_ATTRIBUTES
-        incidents_to_store = incidents[:MAX_INCIDENTS_IN_ATTRIBUTES] if truncated else incidents
+        incidents_to_store = [public_incident(i) for i in incidents[:MAX_INCIDENTS_IN_ATTRIBUTES]]
 
         return {
             "source": self.coordinator.source,
@@ -128,6 +129,7 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert-octagon"
+    _attr_translation_key = "high_severity_incidents"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     # The incident list is large and already available from the geo_location entities.
     _unrecorded_attributes = frozenset({"incidents"})
@@ -142,7 +144,6 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
         super().__init__(coordinator)
         self._entry = entry
         self._state_code = state
-        self._attr_name = f"{state} High severity incidents" if state else "High severity incidents"
         self._attr_unique_id = f"{entry.entry_id}_{state}_high_severity_incidents"
         self._attr_device_info = device_info
         # Use standardized entity_id pattern
@@ -176,7 +177,7 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
 
         # Truncate incidents to avoid exceeding 16KB attribute limit
         truncated = len(incidents) > MAX_INCIDENTS_IN_ATTRIBUTES
-        incidents_to_store = incidents[:MAX_INCIDENTS_IN_ATTRIBUTES] if truncated else incidents
+        incidents_to_store = [public_incident(i) for i in incidents[:MAX_INCIDENTS_IN_ATTRIBUTES]]
 
         return {
             "source": self.coordinator.source,
@@ -191,6 +192,7 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
 class IncidentSummarySensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert-decagram"
+    _attr_translation_key = "incident_summary"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     # The incident list is large and already available from the geo_location entities.
     _unrecorded_attributes = frozenset({"incidents"})
@@ -205,7 +207,6 @@ class IncidentSummarySensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
         super().__init__(coordinator)
         self._entry = entry
         self._state_code = state
-        self._attr_name = f"{state} Incident summary" if state else "Incident summary"
         self._attr_unique_id = f"{entry.entry_id}_{state}_incident_summary"
         self._attr_device_info = device_info
         # Use standardized entity_id pattern

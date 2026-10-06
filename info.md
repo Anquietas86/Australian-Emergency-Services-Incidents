@@ -1,3 +1,3 @@
 # Australian Emergency Services Incidents
-South Australia (CFS/SES) incidents as Geolocation entities and a summary sensor.
+Live emergency incidents and warnings from SA, NSW, VIC, QLD, WA and the ACT as map entities, sensors and automation events, with an "Emergency nearby" sensor for your home.
 See README.md for setup and usage.

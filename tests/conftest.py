@@ -56,17 +56,45 @@ for name in ("homeassistant", "homeassistant.components", "homeassistant.helpers
     pkg = module(name)
     pkg.__path__ = [str(ROOT)] if name == "custom_components.aus_emergency" else []
 module("homeassistant.util", __path__=[], slugify=lambda text: re.sub(r"[^a-z0-9_]+", "_", text.lower()).strip("_"))
-module("homeassistant.core", HomeAssistant=object, ServiceCall=object)
+module("homeassistant.core", HomeAssistant=object, ServiceCall=object, callback=lambda func: func)
 module("homeassistant.config_entries", ConfigEntry=object, ConfigEntryNotReady=ConfigEntryNotReady)
-module("homeassistant.const", Platform=types.SimpleNamespace(GEO_LOCATION="geo_location", SENSOR="sensor"))
+module("homeassistant.const", Platform=types.SimpleNamespace(GEO_LOCATION="geo_location", SENSOR="sensor", BINARY_SENSOR="binary_sensor"))
 module("homeassistant.helpers.update_coordinator", DataUpdateCoordinator=DataUpdateCoordinator, UpdateFailed=UpdateFailed, CoordinatorEntity=CoordinatorEntity)
 module("homeassistant.components.geo_location", GeolocationEvent=GeolocationEvent)
+
+
+class BinarySensorEntity:
+    async def async_added_to_hass(self):
+        pass
+
+    def async_on_remove(self, func):
+        pass
+
+    def async_write_ha_state(self):
+        pass
+
+
+module("homeassistant.components.binary_sensor", BinarySensorEntity=BinarySensorEntity,
+       BinarySensorDeviceClass=types.SimpleNamespace(SAFETY="safety"))
 module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
 module("homeassistant.helpers.config_validation", string=str,
        config_entry_only_config_schema=lambda domain: (lambda config: config))
 module("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda hass: None)
 module("homeassistant.helpers.device_registry", async_get=lambda hass: None)
 module("homeassistant.helpers.entity_registry", async_get=lambda hass: None)
+
+# Repairs issues raised by the coordinators, keyed by issue id
+ISSUES = {}
+
+
+def _create_issue(hass, domain, issue_id, **kwargs):
+    ISSUES[issue_id] = kwargs
+
+
+module("homeassistant.helpers.issue_registry",
+       IssueSeverity=types.SimpleNamespace(WARNING="warning", ERROR="error"),
+       async_create_issue=_create_issue,
+       async_delete_issue=lambda hass, domain, issue_id: ISSUES.pop(issue_id, None))
 async def async_get_time_zone(name):
     return ZoneInfo(name)
 
@@ -98,3 +126,4 @@ coordinator = load("coordinator", "coordinator.py")
 cap = load("cap_coordinator", "cap_coordinator.py")
 integration = load("integration_under_test", "__init__.py")
 geo_location = load("geo_location", "geo_location.py")
+binary_sensor = load("binary_sensor", "binary_sensor.py")
