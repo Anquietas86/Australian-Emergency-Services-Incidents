@@ -1,10 +1,14 @@
 """Minimal HA interface stubs for fast, offline coordinator regression tests."""
 import importlib.util
+import re
 import sys
 import types
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+# Stand-in for HA's configured timezone
+LOCAL_TZ = ZoneInfo("Australia/Adelaide")
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "aus_emergency"
 
 
@@ -48,19 +52,34 @@ class DataUpdateCoordinator:
         self.data = None
 
 
-for name in ("homeassistant", "homeassistant.components", "homeassistant.helpers", "homeassistant.util", "custom_components", "custom_components.aus_emergency"):
+for name in ("homeassistant", "homeassistant.components", "homeassistant.helpers", "custom_components", "custom_components.aus_emergency"):
     pkg = module(name)
     pkg.__path__ = [str(ROOT)] if name == "custom_components.aus_emergency" else []
+module("homeassistant.util", __path__=[], slugify=lambda text: re.sub(r"[^a-z0-9_]+", "_", text.lower()).strip("_"))
 module("homeassistant.core", HomeAssistant=object, ServiceCall=object)
 module("homeassistant.config_entries", ConfigEntry=object, ConfigEntryNotReady=ConfigEntryNotReady)
 module("homeassistant.const", Platform=types.SimpleNamespace(GEO_LOCATION="geo_location", SENSOR="sensor"))
 module("homeassistant.helpers.update_coordinator", DataUpdateCoordinator=DataUpdateCoordinator, UpdateFailed=UpdateFailed, CoordinatorEntity=CoordinatorEntity)
 module("homeassistant.components.geo_location", GeolocationEvent=GeolocationEvent)
 module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
-module("homeassistant.helpers.config_validation", string=str)
+module("homeassistant.helpers.config_validation", string=str,
+       config_entry_only_config_schema=lambda domain: (lambda config: config))
+module("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda hass: None)
 module("homeassistant.helpers.device_registry", async_get=lambda hass: None)
 module("homeassistant.helpers.entity_registry", async_get=lambda hass: None)
-module("homeassistant.util.dt", now=lambda: datetime.now(timezone.utc), parse_datetime=lambda value: None, as_local=lambda value: value)
+async def async_get_time_zone(name):
+    return ZoneInfo(name)
+
+
+def parse_datetime(value):
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+module("homeassistant.util.dt", now=lambda: datetime.now(timezone.utc), parse_datetime=parse_datetime,
+       as_local=lambda value: value.astimezone(LOCAL_TZ), async_get_time_zone=async_get_time_zone)
 
 
 def load(name, filename):

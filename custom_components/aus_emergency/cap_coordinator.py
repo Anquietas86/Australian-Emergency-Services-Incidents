@@ -7,6 +7,7 @@ import aiohttp
 from defusedxml import ElementTree as ET
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -39,6 +40,11 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
         self._feed_config = FEED_URLS.get(state, FEED_URLS["SA"])
 
     @property
+    def consecutive_failures(self) -> int:
+        """Return the number of consecutive failed updates."""
+        return self._consecutive_failures
+
+    @property
     def cap_url(self) -> str | None:
         """Return the CAP feed URL for this state."""
         return self._feed_config.get("cap")
@@ -48,8 +54,8 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
         if not self.cap_url:
             return {"alerts": []}
 
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+        if self._session is None:
+            self._session = async_get_clientsession(self.hass)
 
         try:
             result = await self._fetch_data()
@@ -152,6 +158,5 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
         return {"alerts": alerts}
 
     async def async_close(self) -> None:
-        """Close the aiohttp session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Release resources; the shared HA client session is never closed here."""
+        self._session = None

@@ -18,14 +18,36 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_REMOVE_STALE,
     DEFAULT_EXPOSE_TO_ASSISTANTS,
-    SUPPORTED_STATES,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
+    SELECTABLE_STATES,
 )
+
+UPDATE_INTERVAL_VALIDATOR = vol.All(
+    vol.Coerce(int), vol.Range(min=MIN_UPDATE_INTERVAL, max=MAX_UPDATE_INTERVAL)
+)
+
+
+def _states_selector(current: list[str] | None = None) -> selector.SelectSelector:
+    """Offer working states, plus any retired state an existing entry still uses."""
+    options = list(SELECTABLE_STATES)
+    options.extend(s for s in current or [] if s not in options)
+    return selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=options,
+            multiple=True,
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+
         if user_input is not None:
             # Handle zones - ensure it's a list
             zones = user_input.get(CONF_ZONES, [])
@@ -53,14 +75,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         data_schema = vol.Schema({
-            vol.Required(CONF_STATES, default=DEFAULT_STATES): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=SUPPORTED_STATES,
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Optional(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): int,
+            vol.Required(CONF_STATES, default=DEFAULT_STATES): _states_selector(),
+            vol.Optional(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): UPDATE_INTERVAL_VALIDATOR,
             vol.Optional(CONF_REMOVE_STALE, default=DEFAULT_REMOVE_STALE): bool,
             vol.Optional(CONF_EXPOSE_TO_ASSISTANTS, default=DEFAULT_EXPOSE_TO_ASSISTANTS): bool,
             vol.Optional(CONF_ZONES, default=[]): selector.EntitySelector(
@@ -121,17 +137,11 @@ class OptionsFlow(config_entries.OptionsFlow):
             vol.Required(
                 CONF_STATES,
                 default=default_states
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=SUPPORTED_STATES,
-                    multiple=True,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
+            ): _states_selector(default_states),
             vol.Optional(
                 CONF_UPDATE_INTERVAL,
                 default=data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
-            ): int,
+            ): UPDATE_INTERVAL_VALIDATOR,
             vol.Optional(
                 CONF_REMOVE_STALE,
                 default=data.get(CONF_REMOVE_STALE, DEFAULT_REMOVE_STALE)

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.5
+
+Fixes from a code audit, verified against Home Assistant 2026.2.3.
+
+- Keep the `refresh` and `remove_state` services registered after a reload or options save (they previously disappeared until restart).
+- Validate the update interval (60 to 86400 seconds) and clamp stored out-of-range values, so 0 can no longer make the integration poll continuously.
+- Allow only one config entry; a second entry collided with the first's devices and entity unique IDs.
+- Stop firing `aus_emergency_incident_created` / `aus_emergency_cap_alert_created` for every active incident on each restart or reload. Only incidents not seen before are announced.
+- Fix the "keep stale incidents" mode (`remove_stale` off): ended incidents now actually show as unavailable, fire one removed event, and come back on the same entity (with a created event) if they reappear.
+- Expose new entities to assistants after they are registered (exposure was silently skipped before). The option now defaults to off for new installs; existing choices are kept.
+- CAP alerts: tolerate polygons with newlines or malformed points, alerts without an area, and remove registrations for alerts that expired while HA was down.
+- Timestamps: `incident_datetime` is now always timezone-aware. NSW `pubDate` (UTC, 12-hour clock) is now parsed, UTC `Z` values are no longer treated as local, and naive SA/VIC/QLD/WA times use the state's own timezone.
+- Coerce coordinates to floats and fix a single-coordinate GeoJSON point producing a tuple latitude.
+- NSW incident entity IDs are now valid (slugified). HA warned that the old URL-based IDs stop working in 2027.2. Unique IDs are unchanged.
+- Reduce database growth: drop the per-update `summary_generated` attribute and exclude the incident list and volatile attributes (`last_seen`, `duration_minutes`, CAP text) from the recorder.
+- Use Home Assistant's shared HTTP session, stop polling geo-location entities, avoid a duplicate fetch at startup, release coordinator listeners on unload, hide the feedless TAS option for new selections, and list TAS/WA in the `remove_state` service.
+
 ## v0.3.4
 
 - Default `remove_stale` to on for new installations. Existing explicit off choices are still respected.

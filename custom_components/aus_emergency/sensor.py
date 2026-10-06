@@ -9,7 +9,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import EntityCategory
-from homeassistant.util.dt import now as dt_now
 
 from .const import (
     DOMAIN,
@@ -59,13 +58,16 @@ async def async_setup_entry(
             HighSeverityIncidentsSensor(coordinator, entry, device_info, state),
         ])
 
-    async_add_entities(sensors, update_before_add=True)
+    # Coordinators already refreshed during setup; another fetch here is wasted.
+    async_add_entities(sensors)
 
 
 class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # The incident list is large and already available from the geo_location entities.
+    _unrecorded_attributes = frozenset({"incidents"})
 
     def __init__(
         self,
@@ -114,7 +116,6 @@ class ActiveIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
 
         return {
             "source": self.coordinator.source,
-            "summary_generated": dt_now().isoformat(),
             "counts": counts,
             "incidents": incidents_to_store,
             "incidents_truncated": truncated,
@@ -128,6 +129,8 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert-octagon"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # The incident list is large and already available from the geo_location entities.
+    _unrecorded_attributes = frozenset({"incidents"})
 
     def __init__(
         self,
@@ -177,7 +180,6 @@ class HighSeverityIncidentsSensor(CoordinatorEntity[IncidentDataCoordinator], Se
 
         return {
             "source": self.coordinator.source,
-            "summary_generated": dt_now().isoformat(),
             "counts": counts,
             "incidents": incidents_to_store,
             "incidents_truncated": truncated,
@@ -190,6 +192,8 @@ class IncidentSummarySensor(CoordinatorEntity[IncidentDataCoordinator], SensorEn
     _attr_has_entity_name = True
     _attr_icon = "mdi:alert-decagram"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # The incident list is large and already available from the geo_location entities.
+    _unrecorded_attributes = frozenset({"incidents"})
 
     def __init__(
         self,

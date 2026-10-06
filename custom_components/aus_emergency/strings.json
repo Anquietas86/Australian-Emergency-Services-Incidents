@@ -16,12 +16,15 @@
         "data_description": {
           "states": "Select which Australian states to monitor for emergency incidents",
           "state": "Select which Australian state to monitor for emergency incidents",
-          "update_interval": "How often to poll for new incidents (default: 600 seconds)",
+          "update_interval": "How often to poll for new incidents, in seconds (60 to 86400, default 600)",
           "remove_stale": "Remove incident entities when they are no longer active, instead of marking them unavailable",
-          "expose_to_assistants": "Automatically expose new incident entities to Assist and Google Assistant",
+          "expose_to_assistants": "Expose newly created incident entities to Assist and Google Assistant",
           "zones": "Select Home Assistant zones to filter incidents. Incidents will show which zones they fall within."
         }
       }
+    },
+    "abort": {
+      "single_instance_allowed": "Australian Emergency Services is already configured. Use its options to change the monitored states."
     }
   },
   "options": {
@@ -39,9 +42,9 @@
         "data_description": {
           "states": "Select which Australian states to monitor. Removing a state will also remove its device and entities.",
           "state": "Select which Australian state to monitor",
-          "update_interval": "How often to poll for new incidents",
+          "update_interval": "How often to poll for new incidents, in seconds (60 to 86400, default 600)",
           "remove_stale": "Remove incident entities when no longer active",
-          "expose_to_assistants": "Automatically expose new incident entities to Assist and Google Assistant",
+          "expose_to_assistants": "Expose newly created incident entities to Assist and Google Assistant",
           "zones": "Incidents will show which of these zones they fall within"
         }
       }
