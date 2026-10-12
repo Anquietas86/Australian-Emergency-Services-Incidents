@@ -368,19 +368,40 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             )
 
     async def _fetch_feed_data(self) -> dict[str, Any]:
-        """Fetch a state feed; use the official CFS map when SA CRIIMSON fails."""
+        """Fetch a state feed; for SA fetch FeatureServer + CAP and merge."""
         try:
-            return await self._fetch_primary_data()
+            result = await self._fetch_primary_data()
         except (UpdateFailed, aiohttp.ClientError, ValueError) as primary_error:
             if self._state != "SA":
                 raise
-            _LOGGER.warning("SA CRIIMSON unavailable (%s); trying official CFS map", primary_error)
+            _LOGGER.warning("SA primary feed unavailable (%s); trying official CFS map", primary_error)
             try:
                 return await self._fetch_sa_map_data()
             except (UpdateFailed, aiohttp.ClientError, ValueError) as map_error:
                 raise UpdateFailed(
                     f"SA primary feed failed ({primary_error}); map fallback failed ({map_error})"
                 ) from map_error
+
+        # SA: merge CAP feed data as a supplementary source
+        if self._state == "SA":
+            try:
+                cap_result = await self._fetch_sa_cap_data()
+                if cap_result.get("incidents"):
+                    cap_ids = {i[ATTR_INCIDENT_NO] for i in cap_result["incidents"]}
+                    primary_ids = {i[ATTR_INCIDENT_NO] for i in result["incidents"] if i.get(ATTR_INCIDENT_NO)}
+                    for inc in cap_result["incidents"]:
+                        if inc.get(ATTR_INCIDENT_NO) not in primary_ids:
+                            result["incidents"].append(inc)
+                    _LOGGER.debug(
+                        "SA CAP feed added %d incidents not in primary (%d total from CAP, %d from primary)",
+                        len(cap_result["incidents"]) - len(primary_ids & cap_ids),
+                        len(cap_result["incidents"]),
+                        len(result["incidents"]),
+                    )
+            except (UpdateFailed, aiohttp.ClientError, ValueError, ET.ParseError) as cap_error:
+                _LOGGER.debug("SA CAP feed unavailable, using primary only: %s", cap_error)
+
+        return result
 
     async def _fetch_primary_data(self) -> dict[str, Any]:
         """Fetch and parse the configured state feed."""
@@ -498,56 +519,169 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
         }
 
     async def _parse_sa_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:
-        """Parse SA CFS JSON format."""
+        """Parse SA WebEOC FeatureServer JSON (replaced CRIIMSON, Oct 2026)."""
         data = await resp.json(content_type=None)
+        if not isinstance(data, dict) or data.get("error") or not isinstance(data.get("features"), list):
+            raise UpdateFailed("SA incidents response is not a feature collection")
+        if data.get("exceededTransferLimit"):
+            raise UpdateFailed("SA incident result was truncated")
+
         incidents = []
+        excluded_stale_count = 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SA_MAP_MAX_RECORD_AGE_DAYS)
+        for feature in data["features"]:
+            attrs = feature.get("attributes") or {}
+            geometry = feature.get("geometry") or {}
+            identifier = attrs.get("ident") or attrs.get("atom_id")
+            if not identifier:
+                continue
+            updated = attrs.get("updated")
+            if not isinstance(updated, (int, float)):
+                excluded_stale_count += 1
+                continue
+            updated_at = datetime.fromtimestamp(updated / 1000, tz=timezone.utc)
+            if updated_at < cutoff:
+                excluded_stale_count += 1
+                continue
+            updated_iso = updated_at.isoformat()
+            lat = attrs.get("lat")
+            lon = attrs.get("long")
+            if lat is None and lon is None and geometry:
+                lon, lat = _point_coords(geometry.get("coordinates"))
+            incidents.append({
+                ATTR_INCIDENT_NO: identifier,
+                ATTR_TYPE: attrs.get("event") or attrs.get("sub_cat"),
+                ATTR_STATUS: attrs.get("inc_status"),
+                ATTR_LEVEL: attrs.get("warn_level"),
+                ATTR_SEVERITY: _norm_severity(attrs.get("warn_level"), attrs.get("inc_status")),
+                ATTR_LOCATION_NAME: attrs.get("location") or attrs.get("inc_name"),
+                ATTR_REGION: attrs.get("fbd"),
+                ATTR_DATE: updated_iso,
+                ATTR_TIME: None,
+                ATTR_INCIDENT_DATETIME: updated_iso,
+                ATTR_MESSAGE: attrs.get("headline"),
+                ATTR_MESSAGE_LINK: attrs.get("web"),
+                ATTR_AGENCY: attrs.get("authority"),
+                ATTR_LATITUDE: lat,
+                ATTR_LONGITUDE: lon,
+            })
+        if excluded_stale_count:
+            _LOGGER.debug("SA primary feed omitted %d stale or undated incident(s)", excluded_stale_count)
+        if data["features"] and not incidents:
+            raise UpdateFailed("SA primary feed contains only stale or undated incidents")
+        return {"incidents": incidents}
 
-        if isinstance(data, dict) and "results" in data:
-            raw_incidents = data["results"]
-        elif isinstance(data, list):
-            raw_incidents = data
-        else:
-            _LOGGER.warning("SA incidents JSON is in an unexpected format")
-            return {"incidents": []}
+    async def _fetch_sa_cap_data(self) -> dict[str, Any]:
+        """Fetch and parse the SA CAP (Common Alerting Protocol) XML feed."""
+        cap_url = self._feed_config.get("cap")
+        if not cap_url:
+            raise UpdateFailed("No CAP feed URL configured for SA")
+        async with self._session.get(cap_url, timeout=30) as resp:
+            if resp.status != 200:
+                raise UpdateFailed(f"SA CAP feed returned HTTP {resp.status}")
+            xml_string = await resp.text()
+        return self._parse_sa_cap(xml_string)
 
-        for item in raw_incidents:
-            inc_no = (item.get("IncidentNo") or "").strip() or None
+    def _parse_sa_cap(self, xml_string: str) -> dict[str, Any]:
+        """Parse SA CAP 1.2 Atom XML feed (combined-feed.alert.sa.gov.au)."""
+        try:
+            root = ET.fromstring(xml_string)
+        except ET.ParseError as exc:
+            raise UpdateFailed(f"SA CAP feed returned invalid XML: {exc}") from exc
+
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "cap": "urn:oasis:names:tc:emergency:cap:1.2",
+        }
+        incidents = []
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SA_MAP_MAX_RECORD_AGE_DAYS)
+        excluded_stale_count = 0
+
+        for entry in root.findall("atom:entry", ns):
+            content = entry.find("atom:content", ns)
+            if content is None:
+                continue
+            alert = content.find("cap:alert", ns)
+            if alert is None:
+                continue
+
+            identifier = alert.findtext("cap:identifier", "", ns)
+            if not identifier:
+                continue
+
+            # Check freshness via <sent> element
+            sent_str = alert.findtext("cap:sent", "", ns)
+            sent_dt = self._parse_dt(sent_str)
+            if sent_dt is not None:
+                if sent_dt.astimezone(timezone.utc) < cutoff:
+                    excluded_stale_count += 1
+                    continue
+
+            info = alert.find("cap:info", ns)
+            if info is None:
+                continue
+
+            headline = info.findtext("cap:headline", "", ns)
+            category = info.findtext("cap:category", "", ns)
+            urgency = info.findtext("cap:urgency", "", ns)
+            severity = info.findtext("cap:severity", "", ns)
+            sender_name = info.findtext("cap:senderName", "", ns)
+            description = info.findtext("cap:description", "", ns)
+            web = info.findtext("cap:web", "", ns)
+
+            # Extract coordinates from <area><circle>
             lat = lon = None
-            loc = item.get("Location")
-            if isinstance(loc, str) and "," in loc:
-                parts = [p.strip() for p in loc.split(",")]
-                if len(parts) == 2:
-                    try:
-                        lat = float(parts[0])
-                        lon = float(parts[1])
-                    except (ValueError, TypeError):
-                        pass
+            area = info.find("cap:area", ns)
+            if area is not None:
+                circle = area.findtext("cap:circle", "", ns)
+                if circle:
+                    parts = circle.strip().split()
+                    if parts:
+                        coords = parts[0].split(",")
+                        if len(coords) == 2:
+                            try:
+                                lat, lon = float(coords[0]), float(coords[1])
+                            except (ValueError, TypeError):
+                                pass
 
-            sev = _norm_severity(item.get("Level"), item.get("Status"))
-            date_str = item.get("Date")
-            time_str = item.get("Time")
-            incident_dt = self._parse_dt(date_str, time_str)
+            # Extract structured parameters
+            params: dict[str, str] = {}
+            for param in info.findall("cap:parameter", ns):
+                name = param.findtext("cap:valueName", "", ns)
+                value = param.findtext("cap:value", "", ns)
+                if name:
+                    params[name] = value
+
+            inc_name = params.get("IncidentName") or ""
+            location = params.get("Location") or ""
+            location_name = location if location else inc_name
+            inc_level = params.get("IncidentLevel") or ""
+            inc_status = params.get("Status") or ""
+            warn_level = params.get("WarningLevel") or ""
+            authority = params.get("ControlAuthority") or sender_name or ""
+
+            incident_dt = sent_dt
 
             incidents.append({
-                ATTR_INCIDENT_NO: inc_no,
-                ATTR_TYPE: item.get("Type"),
-                ATTR_STATUS: item.get("Status"),
-                ATTR_LEVEL: item.get("Level"),
-                ATTR_SEVERITY: sev,
-                ATTR_LOCATION_NAME: item.get("Location_name"),
-                ATTR_REGION: item.get("Region"),
-                ATTR_DATE: date_str,
-                ATTR_TIME: time_str,
+                ATTR_INCIDENT_NO: identifier,
+                ATTR_TYPE: category or params.get("SubCategory"),
+                ATTR_STATUS: inc_status,
+                ATTR_LEVEL: warn_level or inc_level,
+                ATTR_SEVERITY: _norm_severity(warn_level, inc_status),
+                ATTR_LOCATION_NAME: location_name or headline,
+                ATTR_REGION: params.get("FireBanDistrict") or "",
+                ATTR_DATE: sent_str,
+                ATTR_TIME: None,
                 ATTR_INCIDENT_DATETIME: incident_dt.isoformat() if incident_dt else None,
-                ATTR_MESSAGE: item.get("Message"),
-                ATTR_MESSAGE_LINK: item.get("Message_link"),
-                ATTR_RESOURCES: item.get("Resources"),
-                ATTR_AIRCRAFT: item.get("Aircraft"),
-                ATTR_AGENCY: item.get("Service") or item.get("Agency"),
+                ATTR_MESSAGE: headline,
+                ATTR_MESSAGE_LINK: web or "https://www.cfs.sa.gov.au/incidents",
+                ATTR_AGENCY: authority,
                 ATTR_LATITUDE: lat,
                 ATTR_LONGITUDE: lon,
             })
 
+        if excluded_stale_count:
+            _LOGGER.debug("SA CAP feed omitted %d stale incident(s)", excluded_stale_count)
         return {"incidents": incidents}
 
     async def _parse_nsw_data(self, resp: aiohttp.ClientResponse) -> dict[str, Any]:

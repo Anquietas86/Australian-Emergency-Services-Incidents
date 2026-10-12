@@ -48,9 +48,9 @@ STATE_TIME_ZONES = {
 SOURCE_SA_CFS = "sa_cfs"
 SOURCE_SA_CFS_GIS = "sa_cfs_gis"
 SA_MAP_MAX_RECORD_AGE_DAYS = 7  # Freshness check, not a claim that incidents resolve within a week.
-# Public incident layer linked from the official CFS map, used when CRIIMSON is down.
+# Public incident layer from the WebEOC feed (replaced CRIIMSON, decommissioned Oct 2026).
 SA_MAP_INCIDENTS_URL = (
-    "https://cfsdata.geohub.sa.gov.au/server/rest/services/IMS_Read/"
+    "https://cfs-feeds.geohub.sa.gov.au/FL/IMS_Read/"
     "SACFS_and_SAMFS_Incidents_and_Incident_Updates/FeatureServer/1/query"
     "?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326"
     "&resultRecordCount=2000&f=json"
@@ -65,8 +65,13 @@ SOURCE_ACT_ESA = "act_esa"
 # Feed URLs by state
 FEED_URLS = {
     "SA": {
-        "json": "https://data.eso.sa.gov.au/prod/cfs/criimson/cfs_current_incidents.json",
-        "cap": "https://data.eso.sa.gov.au/prod/cfs/criimson/cfs_cap_incidents.xml",
+        "json": (
+            "https://cfs-feeds.geohub.sa.gov.au/FL/IMS_Read/"
+            "SACFS_and_SAMFS_Incidents_and_Incident_Updates/FeatureServer/1/query"
+            "?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326"
+            "&resultRecordCount=2000&f=json"
+        ),
+        "cap": "https://combined-feed.alert.sa.gov.au/majorIncidentsCAP.xml",
         "source": SOURCE_SA_CFS,
     },
     "NSW": {
