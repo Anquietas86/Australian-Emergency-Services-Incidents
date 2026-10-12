@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.4.0
+**Version:** v0.4.1
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -8,7 +8,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Lifecycle events** for automations
 
 ### Supported Regions
-- **South Australia (SA)**: CFS/SES via CRIIMSON feed + CAP alerts. If CRIIMSON fails, incidents fall back to the public CFS map's CFS/MFS incident layer (CAP warnings are **not** provided by this fallback).
+- **South Australia (SA)**: CFS/SES via WebEOC FeatureServer + Alert SA CAP feed (replaced CRIIMSON, decommissioned Oct 2026). Both feeds are merged; the FeatureServer provides operational incident data and the CAP feed adds complementary emergency alerts (SES, broader warnings).
 - **New South Wales (NSW)**: RFS major incidents (GeoJSON)
 - **Victoria (VIC)**: Emergency Management Victoria incidents (JSON)
 - **Queensland (QLD)**: Queensland Fire and Emergency Services bushfire alerts (GeoJSON)
@@ -18,7 +18,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Victoria (VIC)** also pulls public warnings (with warning areas) from the VicEmergency map feed alongside incidents.
 - **Northern Territory (NT)** is not supported: the only machine-readable NT file found says not to use or scrape it.
 
-**SA feed status and safety:** The official [SA open-data catalogue](https://data.sa.gov.au/data/dataset/south-australian-country-fire-service-current-incidents-rss-feed) and [CFS incident page](https://www.cfs.sa.gov.au/warnings-restrictions/warnings/incidents-warnings/) still publish links on `data.eso.sa.gov.au`, which returned an HTML “File Unavailable” response on 2 October 2026. The [official CFS map](https://apps.geohub.sa.gov.au/CFSMap/) uses a separate public ArcGIS incident layer; this is the `sa_cfs_gis` fallback. Its records can include historical incidents, and it does **not** provide the equivalent of the CAP warning feed. The fallback excludes records with no update time or older than seven days. If all returned records fail that check, the count is **unavailable**, not zero; if current and stale records coexist, `excluded_stale_count` is recorded in the coordinator data. A long-running incident with no recent update may be excluded, so the map fallback is **not** a safety-critical all-clear. Check the sensor's `source` attribute (`sa_cfs_gis`) and timestamps. Feed failures are reported as unavailable rather than zero incidents.
+**SA feed status and safety:** The SA CFS CRIIMSON incident management system was decommissioned in October 2026, replaced by **WebEOC**. This integration now uses the WebEOC FeatureServer (`cfs-feeds.geohub.sa.gov.au`) as the primary source, supplemented by the Alert SA CAP feed (`combined-feed.alert.sa.gov.au`). The FeatureServer provides operational CFS/SAMFS incident data with coordinates, and the CAP feed adds complementary emergency alerts (SES incidents, broader warnings). Incidents older than 7 days are excluded. If the primary feed fails, the same FeatureServer URL is used as a fallback. Feed failures are reported as unavailable rather than zero incidents.
 
 ### Key Features
 - **Multi-state support**: Monitor incidents across all six Australian states
@@ -49,7 +49,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 
 ### Configuration Options
 - **States**: Select one or more emergency service regions:
-  - **SA** (South Australia) — CFS/SES via CRIIMSON + CAP alerts
+  - **SA** (South Australia) — CFS/SES via WebEOC FeatureServer + Alert SA CAP
   - **NSW** (New South Wales) — RFS major incidents
   - **VIC** (Victoria) — Emergency Management Victoria
   - **QLD** (Queensland) — Queensland Fire and Emergency Services
@@ -249,7 +249,7 @@ data:
 
 ## Current Status
 
-Feeds are operated by their respective agencies and can be unavailable independently. SA incident monitoring has a best-effort map fallback; SA CAP alerts have no verified fallback. TAS has no currently working machine-readable feed. Treat unavailable entities as **unknown**, not zero incidents.
+Feeds are operated by their respective agencies and can be unavailable independently. SA migrated from CRIIMSON to WebEOC in October 2026 — the primary feed is the WebEOC FeatureServer with Alert SA CAP as a complementary source. TAS has no currently working machine-readable feed. Treat unavailable entities as **unknown**, not zero incidents.
 
 ## Development tests
 
