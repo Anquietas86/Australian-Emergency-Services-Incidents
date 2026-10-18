@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.2
+
+- Fix SA incident duplication: the WebEOC FeatureServer and CAP XML feed use different identifiers for the same incident (base ID vs base ID with ISO timestamp suffix). The merge dedup now normalises identifiers by stripping the timestamp before comparing, so each incident appears once.
+
 ## v0.4.0
 
 - Add distance from home to every incident: `distance_km`, `bearing` and `direction` (8-point compass) in attributes and lifecycle events, and `home_in_area` when home is inside a warning area. Incident lists are sorted nearest first.

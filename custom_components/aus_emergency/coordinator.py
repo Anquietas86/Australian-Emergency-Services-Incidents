@@ -387,10 +387,21 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
             try:
                 cap_result = await self._fetch_sa_cap_data()
                 if cap_result.get("incidents"):
-                    cap_ids = {i[ATTR_INCIDENT_NO] for i in cap_result["incidents"]}
-                    primary_ids = {i[ATTR_INCIDENT_NO] for i in result["incidents"] if i.get(ATTR_INCIDENT_NO)}
+                    # Normalise identifiers: CAP appends a timestamp suffix
+                    # (e.g. "F2610150060-2026-10-15T10:28:26+10:30")
+                    # while the FeatureServer uses the base id alone.
+                    def _base_id(inc_no: str | None) -> str | None:
+                        if not inc_no:
+                            return inc_no
+                        # Strip "-YYYY-MM-DD…" timestamp suffix
+                        import re
+                        m = re.match(r'^(.+?)-(\d{4}-\d{2}-\d{2})', str(inc_no))
+                        return m.group(1) if m else inc_no
+
+                    cap_ids = {_base_id(i[ATTR_INCIDENT_NO]) for i in cap_result["incidents"]}
+                    primary_ids = {_base_id(i[ATTR_INCIDENT_NO]) for i in result["incidents"] if i.get(ATTR_INCIDENT_NO)}
                     for inc in cap_result["incidents"]:
-                        if inc.get(ATTR_INCIDENT_NO) not in primary_ids:
+                        if _base_id(inc.get(ATTR_INCIDENT_NO)) not in primary_ids:
                             result["incidents"].append(inc)
                     _LOGGER.debug(
                         "SA CAP feed added %d incidents not in primary (%d total from CAP, %d from primary)",
