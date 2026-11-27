@@ -77,11 +77,11 @@ def test_wa_warning_failure_does_not_publish_incomplete_incident_count():
         asyncio.run(obj._fetch_data())
 
 
-def test_sa_uses_official_map_fallback_when_json_feed_is_down():
+def test_sa_featureserver_incidents_survive_a_cap_outage():
     class SAFeeds:
         closed = False
         def get(self, url, timeout):
-            if "cfsdata.geohub.sa.gov.au" in url:
+            if "cfs-feeds.geohub.sa.gov.au" in url:
                 return Response(200, json.dumps({"features": [{"attributes": {
                     "ident": "F2610020106", "event": "Structure Fire", "inc_status": "Going",
                     "warn_level": "Incident", "inc_name": "MUNNO PARA WEST",
@@ -93,7 +93,7 @@ def test_sa_uses_official_map_fallback_when_json_feed_is_down():
     obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
     obj._session = SAFeeds()
     result = asyncio.run(obj._fetch_data())
-    assert result["fallback_source"] == "sa_cfs_gis"
+    assert "fallback_source" not in result
     assert len(result["incidents"]) == 1
     assert result["incidents"][0][const.ATTR_INCIDENT_NO] == "F2610020106"
     assert result["incidents"][0][const.ATTR_LATITUDE] == -34.665717

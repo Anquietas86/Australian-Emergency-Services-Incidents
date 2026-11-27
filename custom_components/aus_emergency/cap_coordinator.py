@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .coordinator import is_cap_warning
 from .const import (
     ATTR_SEVERITY,
     FEED_URLS,
@@ -21,6 +22,92 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 CAP_NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
+CAP_ALERT_TAG = "{urn:oasis:names:tc:emergency:cap:1.2}alert"
+
+
+def cap_parameters(info: Any) -> dict[str, str]:
+    """Return a CAP <info> block's <parameter> name/value pairs."""
+    params: dict[str, str] = {}
+    for param in info.findall("cap:parameter", CAP_NS):
+        name = param.findtext("cap:valueName", "", CAP_NS)
+        if name:
+            params[name] = param.findtext("cap:value", "", CAP_NS) or ""
+    return params
+
+
+def _alert_elements(root: Any) -> list[Any]:
+    """Return cap:alert elements from a bare alert, a list of alerts, or an Atom feed.
+
+    AlertSA publishes CAP wrapped in Atom (feed/entry/content/alert). A document
+    that is none of these is a feed change, not a quiet day, so it raises.
+    """
+    if root.tag == CAP_ALERT_TAG:
+        return [root]
+    if root.tag == f"{ATOM_NS}feed":
+        alerts = []
+        for entry in root.findall(f"{ATOM_NS}entry"):
+            content = entry.find(f"{ATOM_NS}content")
+            alert = content.find("cap:alert", CAP_NS) if content is not None else None
+            if alert is not None:
+                alerts.append(alert)
+        return alerts
+    alerts = root.findall("cap:alert", CAP_NS)
+    if not alerts and len(root):
+        raise UpdateFailed(f"CAP feed has an unrecognised layout (root <{root.tag}>)")
+    return alerts
+
+
+def parse_cap_alerts(xml_string: str) -> list[dict[str, Any]]:
+    """Parse CAP public warnings; routine incident notices are skipped."""
+    try:
+        root = ET.fromstring(xml_string)
+    except ET.ParseError as exc:
+        raise UpdateFailed(f"CAP feed returned invalid XML: {exc}") from exc
+
+    alerts = []
+    for alert in _alert_elements(root):
+        alert_id = alert.findtext("cap:identifier", None, CAP_NS)
+        if not alert_id:
+            continue
+
+        # Process the first info block we find
+        info = alert.find("cap:info", CAP_NS)
+        if info is None:
+            continue
+
+        params = cap_parameters(info)
+        # Feeds without a WarningLevel parameter only carry warnings.
+        if "WarningLevel" in params and not is_cap_warning(params):
+            continue
+
+        # An alert can have multiple areas
+        areas = []
+        for area in info.findall("cap:area", CAP_NS):
+            area_data = {"areaDesc": area.findtext("cap:areaDesc", None, CAP_NS)}
+            polygons = [p.text.strip() for p in area.findall("cap:polygon", CAP_NS) if p.text]
+            if polygons:
+                area_data["polygon"] = polygons
+            circles = [c.text.strip() for c in area.findall("cap:circle", CAP_NS) if c.text]
+            if circles:
+                area_data["circle"] = circles
+            areas.append(area_data)
+
+        alerts.append({
+            "id": alert_id,
+            "areas": areas,
+            "headline": info.findtext("cap:headline", None, CAP_NS),
+            "description": info.findtext("cap:description", None, CAP_NS),
+            "instruction": info.findtext("cap:instruction", None, CAP_NS),
+            ATTR_SEVERITY: info.findtext("cap:severity", "Unknown", CAP_NS),
+            "urgency": info.findtext("cap:urgency", "Unknown", CAP_NS),
+            "certainty": info.findtext("cap:certainty", "Unknown", CAP_NS),
+            "event": info.findtext("cap:event", "Unknown", CAP_NS),
+            "effective": info.findtext("cap:effective", None, CAP_NS),
+            "expires": info.findtext("cap:expires", None, CAP_NS),
+            "warning_level": params.get("WarningLevel"),
+        })
+    return alerts
 
 
 class CFSCAPDataCoordinator(DataUpdateCoordinator):
@@ -93,8 +180,6 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
 
     async def _fetch_data(self) -> dict[str, Any]:
         """Fetch and parse CAP XML data."""
-        alerts = []
-
         async with self._session.get(self.cap_url, timeout=30) as resp:
             if resp.status != 200:
                 raise UpdateFailed(f"{self._state} CAP feed returned HTTP {resp.status}")
@@ -102,60 +187,9 @@ class CFSCAPDataCoordinator(DataUpdateCoordinator):
                 raise UpdateFailed(
                     f"{self._state} CAP feed returned {resp.content_type}, expected XML"
                 )
-
             xml_string = await resp.text()
-            root = ET.fromstring(xml_string)
 
-            for alert in root.findall("cap:alert", CAP_NS):
-                alert_id = alert.findtext("cap:identifier", None, CAP_NS)
-                if not alert_id:
-                    continue
-
-                # Process the first info block we find
-                info = alert.find("cap:info", CAP_NS)
-                if info is None:
-                    continue
-
-                # An alert can have multiple areas
-                areas = []
-                for area in info.findall("cap:area", CAP_NS):
-                    area_data = {"areaDesc": area.findtext("cap:areaDesc", None, CAP_NS)}
-
-                    # Parse polygon
-                    polygons_text = area.findall("cap:polygon", CAP_NS)
-                    polygons = []
-                    for poly_text_elem in polygons_text:
-                        if poly_text_elem.text:
-                            polygons.append(poly_text_elem.text.strip())
-                    if polygons:
-                        area_data["polygon"] = polygons
-
-                    # Parse circle
-                    circles_text = area.findall("cap:circle", CAP_NS)
-                    circles = []
-                    for circle_text_elem in circles_text:
-                        if circle_text_elem.text:
-                            circles.append(circle_text_elem.text.strip())
-                    if circles:
-                        area_data["circle"] = circles
-
-                    areas.append(area_data)
-
-                alerts.append({
-                    "id": alert_id,
-                    "areas": areas,
-                    "headline": info.findtext("cap:headline", None, CAP_NS),
-                    "description": info.findtext("cap:description", None, CAP_NS),
-                    "instruction": info.findtext("cap:instruction", None, CAP_NS),
-                    ATTR_SEVERITY: info.findtext("cap:severity", "Unknown", CAP_NS),
-                    "urgency": info.findtext("cap:urgency", "Unknown", CAP_NS),
-                    "certainty": info.findtext("cap:certainty", "Unknown", CAP_NS),
-                    "event": info.findtext("cap:event", "Unknown", CAP_NS),
-                    "effective": info.findtext("cap:effective", None, CAP_NS),
-                    "expires": info.findtext("cap:expires", None, CAP_NS),
-                })
-
-        return {"alerts": alerts}
+        return {"alerts": parse_cap_alerts(xml_string)}
 
     async def async_close(self) -> None:
         """Release resources; the shared HA client session is never closed here."""

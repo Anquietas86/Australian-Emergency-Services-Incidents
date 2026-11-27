@@ -68,6 +68,17 @@ def _norm_severity(level: str | None, status: str | None) -> str:
     return "info"
 
 
+# CAP WarningLevel values that are public warnings, not routine incident
+# notices ("Incident", "Update"). Warnings become CAP alert entities; routine
+# notices are merged into the state's incidents, so each shows on the map once.
+CAP_WARNING_SEVERITIES = ("advice", "watch_and_act", "emergency_warning")
+
+
+def is_cap_warning(params: dict[str, str]) -> bool:
+    """True when a CAP alert's WarningLevel parameter marks a public warning."""
+    return _norm_severity(params.get("WarningLevel"), None) in CAP_WARNING_SEVERITIES
+
+
 def _parse_incident_datetime(
     date_str: str | None,
     time_str: str | None,
@@ -662,6 +673,11 @@ class IncidentDataCoordinator(DataUpdateCoordinator):
                 value = param.findtext("cap:value", "", ns)
                 if name:
                     params[name] = value
+
+            # Public warnings are CAP alert entities; merging them here too
+            # would show each one twice.
+            if is_cap_warning(params):
+                continue
 
             inc_name = params.get("IncidentName") or ""
             location = params.get("Location") or ""
