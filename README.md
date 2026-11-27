@@ -1,6 +1,6 @@
 # Australian Emergency Services Incidents
 
-**Version:** v0.4.1
+**Version:** v0.4.4
 
 This Home Assistant custom integration pulls live emergency incidents from **Australian Emergency Services** and exposes them as:
 - **Geolocation** entities (map-friendly coordinates)
@@ -18,7 +18,7 @@ This Home Assistant custom integration pulls live emergency incidents from **Aus
 - **Victoria (VIC)** also pulls public warnings (with warning areas) from the VicEmergency map feed alongside incidents.
 - **Northern Territory (NT)** is not supported: the only machine-readable NT file found says not to use or scrape it.
 
-**SA feed status and safety:** The SA CFS CRIIMSON incident management system was decommissioned in October 2026, replaced by **WebEOC**. This integration now uses the WebEOC FeatureServer (`cfs-feeds.geohub.sa.gov.au`) as the primary source, supplemented by the Alert SA CAP feed (`combined-feed.alert.sa.gov.au`). The FeatureServer provides operational CFS/SAMFS incident data with coordinates, and the CAP feed adds complementary emergency alerts (SES incidents, broader warnings). Incidents older than 7 days are excluded. If the primary feed fails, the same FeatureServer URL is used as a fallback. Feed failures are reported as unavailable rather than zero incidents.
+**SA feed status and safety:** The SA CFS CRIIMSON incident management system was decommissioned in October 2026, replaced by **WebEOC**. This integration now uses the WebEOC FeatureServer (`cfs-feeds.geohub.sa.gov.au`) as the primary source, supplemented by the Alert SA CAP feed (`combined-feed.alert.sa.gov.au`). The FeatureServer provides operational CFS/SAMFS incident data with coordinates, and the CAP feed adds complementary emergency alerts (SES incidents, broader warnings). Incidents older than 7 days are excluded, and so are jobs the CAP feed marks as finished. CAP public warnings appear as separate CAP alert entities. If the CAP feed fails, SA uses the FeatureServer alone; if the FeatureServer fails, SA is unavailable. Feed failures are reported as unavailable rather than zero incidents.
 
 ### Key Features
 - **Multi-state support**: Monitor incidents across all six Australian states

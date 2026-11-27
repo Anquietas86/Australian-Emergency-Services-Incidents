@@ -46,15 +46,8 @@ STATE_TIME_ZONES = {
 
 # Data source identifiers
 SOURCE_SA_CFS = "sa_cfs"
-SOURCE_SA_CFS_GIS = "sa_cfs_gis"
-SA_MAP_MAX_RECORD_AGE_DAYS = 7  # Freshness check, not a claim that incidents resolve within a week.
-# Public incident layer from the WebEOC feed (replaced CRIIMSON, decommissioned Oct 2026).
-SA_MAP_INCIDENTS_URL = (
-    "https://cfs-feeds.geohub.sa.gov.au/FL/IMS_Read/"
-    "SACFS_and_SAMFS_Incidents_and_Incident_Updates/FeatureServer/1/query"
-    "?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326"
-    "&resultRecordCount=2000&f=json"
-)
+# Freshness check on SA records, not a claim that incidents resolve within a week.
+SA_MAX_RECORD_AGE_DAYS = 7
 SOURCE_NSW_RFS = "nsw_rfs"
 SOURCE_VIC_EMV = "vic_emv"
 SOURCE_QLD_QFES = "qld_qfes"
@@ -160,7 +153,7 @@ SERVICE_REFRESH = "refresh"
 SERVICE_REMOVE_STATE = "remove_state"
 
 # Retry/backoff settings
-DEFAULT_RETRY_DELAY = 30  # seconds
+DEFAULT_RETRY_DELAY = 30  # seconds; a quick first retry, growing to MAX_RETRY_DELAY
 MAX_RETRY_DELAY = 600  # 10 minutes max backoff
 BACKOFF_MULTIPLIER = 2
 
@@ -168,7 +161,7 @@ DEVICE_INFO_SA_CFS = {
     "identifiers": {("aus_emergency", "sa_cfs")},
     "name": "South Australia",
     "manufacturer": "SA Government",
-    "model": "CRIIMSON Feed",
+    "model": "WebEOC and AlertSA Feeds",
 }
 
 DEVICE_INFO_NSW_RFS = {
