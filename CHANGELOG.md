@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.3
+
+- Fix SA CAP alert entities, which disappeared in v0.4.1: the AlertSA feed wraps its alerts in an Atom feed, and the CAP parser only looked at the top level, so it found no alerts and reported that as success.
+- SA CAP alert entities (and `aus_emergency_cap_alert_*` events) are now only created for public warnings (Advice, Watch and Act, Emergency Warning). Routine incident notices stay in the SA incident list, and warnings are no longer merged into it, so nothing appears on the map twice.
+- A CAP document with an unrecognised layout now fails the update instead of silently reporting zero alerts.
+- Update the SA tests for the WebEOC feed (CI was failing since v0.4.1).
+
 ## v0.4.2
 
 - Fix SA incident duplication: the WebEOC FeatureServer and CAP XML feed use different identifiers for the same incident (base ID vs base ID with ISO timestamp suffix). The merge dedup now normalises identifiers by stripping the timestamp before comparing, so each incident appears once.
