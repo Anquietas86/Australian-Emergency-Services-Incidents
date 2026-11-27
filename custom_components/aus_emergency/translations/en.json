@@ -115,10 +115,6 @@
       "title": "{state} emergency feed is unavailable",
       "description": "The {state} incident feed has failed {failures} updates in a row, so its sensors and map entities are unavailable. Treat this as unknown, not as no incidents, and check your state's emergency website directly. The integration keeps retrying and clears this message when the feed recovers.\n\nLast error: {error}"
     },
-    "sa_map_fallback": {
-      "title": "SA incidents are using the CFS map fallback",
-      "description": "The SA CRIIMSON feed is unavailable, so SA incidents come from the public CFS map layer. That layer can include old records and does not provide CAP warnings. Do not rely on it as an all clear. This message clears when CRIIMSON recovers."
-    },
     "state_without_feed": {
       "title": "{state} has no incident feed",
       "description": "{state} no longer publishes a machine-readable incident feed, so its sensors stay unavailable. Remove {state} in the integration's options to stop this message."

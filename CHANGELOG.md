@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.4
+
+- SA: a failure of the supplementary AlertSA CAP feed (including a timeout) no longer takes down the whole SA update; SA falls back to the WebEOC FeatureServer alone.
+- SA: incidents that only appear in the CAP feed are now keyed by their incident id instead of the per-message CAP identifier, so a re-issued message updates the same entity instead of removing it and creating a new one. Only the newest message per incident is kept, so an incident no longer shows twice.
+- SA: jobs the CAP feed reports as finished (for example SES `Completed`) are no longer counted as active incidents.
+- SA: remove the "CFS map fallback", which since v0.4.1 fetched the same URL as the primary feed, along with its Repairs card. A FeatureServer holding only old records no longer makes SA unavailable when the CAP feed confirms the current picture.
+- SA: convert FeatureServer Web Mercator geometry correctly when an incident lacks lat/long attributes; CAP-only incidents use the CAP event (for example "Grass Fire") as their type.
+- VIC warnings link to emergency.vic.gov.au when the feed gives no URL.
+- Device model for SA now reads "WebEOC and AlertSA Feeds". Pin the hassfest and HACS CI actions to commits.
+
 ## v0.4.3
 
 - Fix SA CAP alert entities, which disappeared in v0.4.1: the AlertSA feed wraps its alerts in an Atom feed, and the CAP parser only looked at the top level, so it found no alerts and reported that as success.
@@ -10,6 +20,10 @@
 ## v0.4.2
 
 - Fix SA incident duplication: the WebEOC FeatureServer and CAP XML feed use different identifiers for the same incident (base ID vs base ID with ISO timestamp suffix). The merge dedup now normalises identifiers by stripping the timestamp before comparing, so each incident appears once.
+
+## v0.4.1
+
+- SA: CRIIMSON was decommissioned in October 2026. Incidents now come from the WebEOC FeatureServer, supplemented by the AlertSA CAP feed.
 
 ## v0.4.0
 

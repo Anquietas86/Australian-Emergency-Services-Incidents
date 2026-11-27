@@ -100,36 +100,38 @@ def test_sa_featureserver_incidents_survive_a_cap_outage():
     assert result["incidents"][0][const.ATTR_STATUS] == "Going"
 
 
+def _sa_parse(features):
+    obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
+    return asyncio.run(obj._parse_sa_data(Response(200, json.dumps({"features": features}))))
+
+
 @pytest.mark.parametrize("updated", [1787831280000, None])
-def test_sa_map_does_not_report_stale_or_undated_incidents_as_active(updated):
-    class OldMap:
-        closed = False
-        def get(self, url, timeout):
-            return Response(200, json.dumps({"features": [{"attributes": {
-                "ident": "F2608270132", "event": "Burn Off",
-                "inc_status": "Controlled", "updated": updated,
-                "lat": -34.8, "long": 138.7,
-            }}]}))
-    obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
-    obj._session = OldMap()
-    with pytest.raises(UpdateFailed, match="stale|timestamp"):
-        asyncio.run(obj._fetch_sa_map_data())
+def test_sa_stale_or_undated_records_are_not_active(updated):
+    result = _sa_parse([{"attributes": {
+        "ident": "F2608270132", "event": "Burn Off",
+        "inc_status": "Controlled", "updated": updated,
+        "lat": -34.8, "long": 138.7,
+    }}])
+    assert result == {"incidents": [], "stale_only": True}
 
 
-def test_sa_map_excludes_stale_record_when_current_record_exists():
+def test_sa_excludes_stale_record_when_current_record_exists():
     current = int(datetime.now(timezone.utc).timestamp() * 1000)
-    class MixedMap:
-        closed = False
-        def get(self, url, timeout):
-            return Response(200, json.dumps({"features": [
-                {"attributes": {"ident": "recent", "updated": current, "inc_status": "Going"}},
-                {"attributes": {"ident": "old", "updated": 1787831280000, "inc_status": "Controlled"}},
-            ]}))
-    obj = coordinator.IncidentDataCoordinator(None, "SA", 600)
-    obj._session = MixedMap()
-    result = asyncio.run(obj._fetch_sa_map_data())
+    result = _sa_parse([
+        {"attributes": {"ident": "recent", "updated": current, "inc_status": "Going"}},
+        {"attributes": {"ident": "old", "updated": 1787831280000, "inc_status": "Controlled"}},
+    ])
     assert [item[const.ATTR_INCIDENT_NO] for item in result["incidents"]] == ["recent"]
-    assert result["excluded_stale_count"] == 1
+    assert result["stale_only"] is False
+
+
+def test_sa_web_mercator_geometry_is_converted_when_lat_long_missing():
+    # Live FeatureServer geometry for F2611270094 (lat -33.571402, long 136.756901)
+    current = int(datetime.now(timezone.utc).timestamp() * 1000)
+    inc = _sa_parse([{"attributes": {"ident": "F2611270094", "updated": current},
+                      "geometry": {"x": 15223709, "y": -3971396}}])["incidents"][0]
+    assert inc[const.ATTR_LATITUDE] == pytest.approx(-33.5714, abs=1e-3)
+    assert inc[const.ATTR_LONGITUDE] == pytest.approx(136.7569, abs=1e-3)
 
 
 def test_sa_rejects_failed_map_fallback_too():
